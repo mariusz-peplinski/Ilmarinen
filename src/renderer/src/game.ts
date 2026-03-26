@@ -76,6 +76,12 @@ const GROUND_SNAP = 0.08;
 const WALK_FRAME_TIME = 0.12;
 const VIEW_NAMES = ['N', 'E', 'S', 'W'] as const;
 const SCREEN_DIRECTION_NAMES = ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'] as const;
+const SCREEN_MAX_RUN_SPEED = BASE_APPARENT_MOVE_SPEED * MAX_RUN_SPEED;
+const SCREEN_GROUND_ACCEL = BASE_APPARENT_MOVE_SPEED * GROUND_ACCEL;
+const SCREEN_GROUND_TURN_ACCEL = BASE_APPARENT_MOVE_SPEED * GROUND_TURN_ACCEL;
+const SCREEN_AIR_ACCEL = BASE_APPARENT_MOVE_SPEED * AIR_ACCEL;
+const SCREEN_GROUND_FRICTION = BASE_APPARENT_MOVE_SPEED * GROUND_FRICTION;
+const SCREEN_AIR_FRICTION = BASE_APPARENT_MOVE_SPEED * AIR_FRICTION;
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.max(min, Math.min(max, value));
@@ -133,40 +139,24 @@ class InputController {
     });
   }
 
-  public getMoveVector(viewRotation: number): Vec2 {
-    const cardinalVectors: Vec2[] = [
-      { x: -1, y: -1 },
-      { x: 1, y: -1 },
-      { x: 1, y: 1 },
-      { x: -1, y: 1 }
-    ];
-
-    const top = cardinalVectors[viewRotation % 4];
-    const right = cardinalVectors[(viewRotation + 1) % 4];
-    const bottom = cardinalVectors[(viewRotation + 2) % 4];
-    const left = cardinalVectors[(viewRotation + 3) % 4];
-
+  public getMoveVector(): Vec2 {
     let x = 0;
     let y = 0;
 
     if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) {
-      x += top.x;
-      y += top.y;
+      y -= 1;
     }
 
     if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) {
-      x += bottom.x;
-      y += bottom.y;
+      y += 1;
     }
 
     if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) {
-      x += left.x;
-      y += left.y;
+      x -= 1;
     }
 
     if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) {
-      x += right.x;
-      y += right.y;
+      x += 1;
     }
 
     const magnitude = length(x, y);
@@ -611,15 +601,20 @@ export class IsoGame {
     };
   }
 
-  private applyMoveCompensation(move: Vec2): Vec2 {
-    const projected = this.projectVelocity(move.x, move.y);
-    const apparentSpeed = length(projected.x, projected.y);
-    const compensation = apparentSpeed > 0 ? BASE_APPARENT_MOVE_SPEED / apparentSpeed : 1;
+  private screenVelocityToWorld(x: number, y: number): Vec2 {
+    const rotatedX = x / TILE_WIDTH + y / TILE_HEIGHT;
+    const rotatedY = y / TILE_HEIGHT - x / TILE_WIDTH;
 
-    return {
-      x: move.x * compensation,
-      y: move.y * compensation
-    };
+    switch (this.viewRotation % 4) {
+      case 1:
+        return { x: -rotatedY, y: rotatedX };
+      case 2:
+        return { x: -rotatedX, y: -rotatedY };
+      case 3:
+        return { x: rotatedY, y: -rotatedX };
+      default:
+        return { x: rotatedX, y: rotatedY };
+    }
   }
 
   private getSupportHeight(x: number, y: number): number {
@@ -681,10 +676,9 @@ export class IsoGame {
       this.camera.y = focus.y;
     }
 
-    const rawMove = this.input.getMoveVector(this.viewRotation);
-    const move = this.applyMoveCompensation(rawMove);
-    const desiredX = move.x * MAX_RUN_SPEED;
-    const desiredY = move.y * MAX_RUN_SPEED;
+    const move = this.input.getMoveVector();
+    const desiredScreenX = move.x * SCREEN_MAX_RUN_SPEED;
+    const desiredScreenY = move.y * SCREEN_MAX_RUN_SPEED;
 
     if (jumpPressed) {
       this.jumpBufferTimer = JUMP_BUFFER_TIME;
@@ -698,50 +692,63 @@ export class IsoGame {
       this.coyoteTimer = Math.max(0, this.coyoteTimer - dt);
     }
 
-    const speedRatio = clamp(Math.hypot(this.player.vx, this.player.vy) / MAX_RUN_SPEED, 0, 1);
+    let screenVelocity = this.projectVelocity(this.player.vx, this.player.vy);
+    const speedRatio = clamp(
+      Math.hypot(screenVelocity.x, screenVelocity.y) / SCREEN_MAX_RUN_SPEED,
+      0,
+      1
+    );
     const curvedSpeedRatio = Math.pow(speedRatio, GROUND_ACCEL_CURVE);
     const groundedRunAccel = lerp(
-      GROUND_ACCEL * GROUND_START_ACCEL_FACTOR,
-      GROUND_ACCEL,
+      SCREEN_GROUND_ACCEL * GROUND_START_ACCEL_FACTOR,
+      SCREEN_GROUND_ACCEL,
       curvedSpeedRatio
     );
     const groundedTurnAccel = lerp(
-      GROUND_TURN_ACCEL * GROUND_START_ACCEL_FACTOR,
-      GROUND_TURN_ACCEL,
+      SCREEN_GROUND_TURN_ACCEL * GROUND_START_ACCEL_FACTOR,
+      SCREEN_GROUND_TURN_ACCEL,
       curvedSpeedRatio
     );
 
     const accelX =
-      this.player.grounded && desiredX !== 0 && Math.sign(desiredX) !== Math.sign(this.player.vx)
+      this.player.grounded &&
+      desiredScreenX !== 0 &&
+      Math.sign(desiredScreenX) !== Math.sign(screenVelocity.x)
         ? groundedTurnAccel
         : this.player.grounded
           ? groundedRunAccel
-          : AIR_ACCEL;
+          : SCREEN_AIR_ACCEL;
     const accelY =
-      this.player.grounded && desiredY !== 0 && Math.sign(desiredY) !== Math.sign(this.player.vy)
+      this.player.grounded &&
+      desiredScreenY !== 0 &&
+      Math.sign(desiredScreenY) !== Math.sign(screenVelocity.y)
         ? groundedTurnAccel
         : this.player.grounded
           ? groundedRunAccel
-          : AIR_ACCEL;
+          : SCREEN_AIR_ACCEL;
 
-    this.player.vx = approach(this.player.vx, desiredX, accelX * dt);
-    this.player.vy = approach(this.player.vy, desiredY, accelY * dt);
+    screenVelocity.x = approach(screenVelocity.x, desiredScreenX, accelX * dt);
+    screenVelocity.y = approach(screenVelocity.y, desiredScreenY, accelY * dt);
 
     if (move.x === 0) {
-      this.player.vx = approach(
-        this.player.vx,
+      screenVelocity.x = approach(
+        screenVelocity.x,
         0,
-        (this.player.grounded ? GROUND_FRICTION : AIR_FRICTION) * dt
+        (this.player.grounded ? SCREEN_GROUND_FRICTION : SCREEN_AIR_FRICTION) * dt
       );
     }
 
     if (move.y === 0) {
-      this.player.vy = approach(
-        this.player.vy,
+      screenVelocity.y = approach(
+        screenVelocity.y,
         0,
-        (this.player.grounded ? GROUND_FRICTION : AIR_FRICTION) * dt
+        (this.player.grounded ? SCREEN_GROUND_FRICTION : SCREEN_AIR_FRICTION) * dt
       );
     }
+
+    const worldVelocity = this.screenVelocityToWorld(screenVelocity.x, screenVelocity.y);
+    this.player.vx = worldVelocity.x;
+    this.player.vy = worldVelocity.y;
 
     this.moveAxis('x', this.player.vx * dt);
     this.moveAxis('y', this.player.vy * dt);
