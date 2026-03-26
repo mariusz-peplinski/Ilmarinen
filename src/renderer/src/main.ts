@@ -37,9 +37,60 @@ if (!hudStatus) {
   throw new Error('Expected HUD status element.');
 }
 
+const compass = document.createElement('div');
+compass.className = 'compass';
+compass.innerHTML = `
+  <span class="compass-label compass-top" data-slot="top">N</span>
+  <span class="compass-label compass-right" data-slot="right">E</span>
+  <span class="compass-label compass-bottom" data-slot="bottom">S</span>
+  <span class="compass-label compass-left" data-slot="left">W</span>
+`;
+root.appendChild(compass);
+
+const offsetPanel = document.createElement('div');
+offsetPanel.className = 'offset-panel';
+offsetPanel.innerHTML = `
+  <h2>Terrain Offset</h2>
+  <div class="offset-status" id="terrain-offset-status"></div>
+  <div class="offset-grid">
+    <button type="button" data-offset="NW">NW</button>
+    <button type="button" data-offset="N">N</button>
+    <button type="button" data-offset="NE">NE</button>
+    <button type="button" data-offset="W">W</button>
+    <button type="button" data-offset="RESET">Reset</button>
+    <button type="button" data-offset="E">E</button>
+    <button type="button" data-offset="SW">SW</button>
+    <button type="button" data-offset="S">S</button>
+    <button type="button" data-offset="SE">SE</button>
+  </div>
+`;
+root.appendChild(offsetPanel);
+
+const terrainOffsetStatus = offsetPanel.querySelector<HTMLDivElement>('#terrain-offset-status');
+
+if (!terrainOffsetStatus) {
+  throw new Error('Expected terrain offset status element.');
+}
+
 const tilesetTexture = await Assets.load<Texture>(tilesetUrl);
 tilesetTexture.baseTexture.scaleMode = SCALE_MODES.NEAREST;
 const charactersTexture = await Assets.load<Texture>(charactersUrl);
 charactersTexture.baseTexture.scaleMode = SCALE_MODES.NEAREST;
 
-new IsoGame(app, hudStatus, tilesetTexture.baseTexture, charactersTexture.baseTexture);
+const game = new IsoGame(
+  app,
+  hudStatus,
+  compass,
+  terrainOffsetStatus,
+  tilesetTexture.baseTexture,
+  charactersTexture.baseTexture
+);
+
+for (const button of offsetPanel.querySelectorAll<HTMLButtonElement>('[data-offset]')) {
+  button.addEventListener('click', () => {
+    const direction = button.dataset.offset;
+    if (direction) {
+      game.nudgeTerrainOffset(direction);
+    }
+  });
+}

@@ -77,3 +77,112 @@ canvas {
   color: var(--text-soft);
   white-space: pre-line;
 }
+
+.compass {
+  position: absolute;
+  right: 28px;
+  top: 24px;
+  width: 96px;
+  height: 96px;
+  pointer-events: none;
+  color: rgba(244, 243, 237, 0.88);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.compass::before,
+.compass::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  background: rgba(244, 243, 237, 0.28);
+  transform: translate(-50%, -50%);
+}
+
+.compass::before {
+  width: 1px;
+  height: 64px;
+}
+
+.compass::after {
+  width: 64px;
+  height: 1px;
+}
+
+.compass-label {
+  position: absolute;
+}
+
+.compass-top {
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.compass-right {
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.compass-bottom {
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.compass-left {
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.offset-panel {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  width: 220px;
+  padding: 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 2px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.25);
+}
+
+.offset-panel h2 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.offset-status {
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-soft);
+  white-space: pre-line;
+}
+
+.offset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.offset-grid button {
+  padding: 8px 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-main);
+  font: inherit;
+  cursor: pointer;
+}
+
+.offset-grid button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}

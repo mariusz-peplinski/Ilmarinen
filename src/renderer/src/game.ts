@@ -26,6 +26,13 @@ interface Vec2 {
   y: number;
 }
 
+interface TerrainBlock {
+  x: number;
+  y: number;
+  z: number;
+  material: MaterialKey;
+}
+
 interface PlayerState {
   x: number;
   y: number;
@@ -67,6 +74,8 @@ const MAP_EDGE_PADDING = 0.02;
 const STEP_HEIGHT = 0.2;
 const GROUND_SNAP = 0.08;
 const WALK_FRAME_TIME = 0.12;
+const VIEW_NAMES = ['N', 'E', 'S', 'W'] as const;
+const SCREEN_DIRECTION_NAMES = ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'] as const;
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.max(min, Math.min(max, value));
@@ -83,14 +92,16 @@ const lerp = (start: number, end: number, t: number): number => start + (end - s
 
 const length = (x: number, y: number): number => Math.hypot(x, y);
 
-const isoProject = (x: number, y: number, z: number): Vec2 => ({
-  x: (x - y) * (TILE_WIDTH / 2),
-  y: (x + y) * (TILE_HEIGHT / 2) - z * BLOCK_HEIGHT
-});
+const getCompassDirection = (x: number, y: number): string => {
+  const angle = Math.atan2(y, x);
+  const octant = ((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8;
+  return SCREEN_DIRECTION_NAMES[octant];
+};
 
 class InputController {
   private readonly keys = new Set<string>();
   private jumpQueued = false;
+  private rotateQueued = 0;
 
   constructor() {
     window.addEventListener('keydown', (event) => {
@@ -98,6 +109,13 @@ class InputController {
         event.preventDefault();
         if (!event.repeat) {
           this.jumpQueued = true;
+        }
+      }
+
+      if (event.code === 'Tab') {
+        event.preventDefault();
+        if (!event.repeat) {
+          this.rotateQueued += event.shiftKey ? -1 : 1;
         }
       }
 
@@ -111,31 +129,44 @@ class InputController {
     window.addEventListener('blur', () => {
       this.keys.clear();
       this.jumpQueued = false;
+      this.rotateQueued = 0;
     });
   }
 
-  public getMoveVector(): Vec2 {
+  public getMoveVector(viewRotation: number): Vec2 {
+    const cardinalVectors: Vec2[] = [
+      { x: -1, y: -1 },
+      { x: 1, y: -1 },
+      { x: 1, y: 1 },
+      { x: -1, y: 1 }
+    ];
+
+    const top = cardinalVectors[viewRotation % 4];
+    const right = cardinalVectors[(viewRotation + 1) % 4];
+    const bottom = cardinalVectors[(viewRotation + 2) % 4];
+    const left = cardinalVectors[(viewRotation + 3) % 4];
+
     let x = 0;
     let y = 0;
 
     if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) {
-      x -= 1;
-      y -= 1;
+      x += top.x;
+      y += top.y;
     }
 
     if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) {
-      x += 1;
-      y += 1;
+      x += bottom.x;
+      y += bottom.y;
     }
 
     if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) {
-      x -= 1;
-      y += 1;
+      x += left.x;
+      y += left.y;
     }
 
     if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) {
-      x += 1;
-      y -= 1;
+      x += right.x;
+      y += right.y;
     }
 
     const magnitude = length(x, y);
@@ -144,21 +175,18 @@ class InputController {
       y /= magnitude;
     }
 
-    const apparentX = (x - y) * (TILE_WIDTH / 2);
-    const apparentY = (x + y) * (TILE_HEIGHT / 2);
-    const apparentSpeed = length(apparentX, apparentY);
-    const compensation =
-      apparentSpeed > 0 ? BASE_APPARENT_MOVE_SPEED / apparentSpeed : 1;
-
-    return {
-      x: x * compensation,
-      y: y * compensation
-    };
+    return { x, y };
   }
 
   public consumeJump(): boolean {
     const queued = this.jumpQueued;
     this.jumpQueued = false;
+    return queued;
+  }
+
+  public consumeRotate(): number {
+    const queued = this.rotateQueued;
+    this.rotateQueued = 0;
     return queued;
   }
 
@@ -304,12 +332,16 @@ function createExampleMap(): MapData {
     setHeight(map, 24, y, getHeight(map, 24, y), 'sand');
   }
 
+  setHeight(map, 25, 20, 1, 'stone');
+
   return map;
 }
 
 export class IsoGame {
   private readonly app: Application;
   private readonly hudStatus: HTMLDivElement;
+  private readonly compassLabels: Record<'top' | 'right' | 'bottom' | 'left', HTMLSpanElement>;
+  private readonly terrainOffsetStatus: HTMLDivElement;
   private readonly input = new InputController();
   private readonly world = new Container();
   private readonly terrainLayer = new Container();
@@ -320,8 +352,10 @@ export class IsoGame {
   private readonly terrainTiles: TerrainTiles;
   private readonly characterFrames: Texture[][];
   private readonly camera = { x: 0, y: 0 };
+  private readonly terrainScreenOffset: Vec2 = { x: 0, y: TILE_HEIGHT / 2 };
   private walkTime = 0;
   private currentDirection = 4;
+  private viewRotation = 0;
   private coyoteTimer = 0;
   private jumpBufferTimer = 0;
   private jumpHoldTimer = 0;
@@ -339,11 +373,20 @@ export class IsoGame {
   public constructor(
     app: Application,
     hudStatus: HTMLDivElement,
+    compass: HTMLDivElement,
+    terrainOffsetStatus: HTMLDivElement,
     terrainBaseTexture: BaseTexture,
     charactersBaseTexture: BaseTexture
   ) {
     this.app = app;
     this.hudStatus = hudStatus;
+    this.terrainOffsetStatus = terrainOffsetStatus;
+    this.compassLabels = {
+      top: this.getCompassLabel(compass, 'top'),
+      right: this.getCompassLabel(compass, 'right'),
+      bottom: this.getCompassLabel(compass, 'bottom'),
+      left: this.getCompassLabel(compass, 'left')
+    };
     this.terrainTiles = this.createTerrainTiles(terrainBaseTexture);
     this.characterFrames = this.createCharacterFrames(charactersBaseTexture);
 
@@ -357,11 +400,26 @@ export class IsoGame {
     this.app.stage.addChild(this.world);
 
     this.rebuildTerrain();
+    this.updateCompass();
+    this.updateTerrainOffsetStatus();
     this.updatePlayerVisuals();
     this.app.ticker.add(() => {
       const dt = Math.min(this.app.ticker.deltaMS / 1000, 1 / 30);
       this.update(dt);
     });
+  }
+
+  private getCompassLabel(
+    compass: HTMLDivElement,
+    slot: 'top' | 'right' | 'bottom' | 'left'
+  ): HTMLSpanElement {
+    const label = compass.querySelector<HTMLSpanElement>(`[data-slot="${slot}"]`);
+
+    if (!label) {
+      throw new Error(`Expected compass label for slot "${slot}".`);
+    }
+
+    return label;
   }
 
   private sliceTerrainTexture(baseTexture: BaseTexture, column: number, row: number): Texture {
@@ -406,13 +464,10 @@ export class IsoGame {
 
   private rebuildTerrain(): void {
     this.terrainLayer.removeChildren();
+    const blocks: TerrainBlock[] = [];
 
-    for (let sum = 0; sum < this.map.width + this.map.height - 1; sum += 1) {
-      const yStart = Math.max(0, sum - (this.map.width - 1));
-      const yEnd = Math.min(this.map.height - 1, sum);
-
-      for (let y = yStart; y <= yEnd; y += 1) {
-        const x = sum - y;
+    for (let y = 0; y < this.map.height; y += 1) {
+      for (let x = 0; x < this.map.width; x += 1) {
         const cell = getCell(this.map, x, y);
 
         for (let z = 0; z < cell.height; z += 1) {
@@ -420,10 +475,35 @@ export class IsoGame {
             continue;
           }
 
-          const sprite = this.createTerrainBlock(x, y, z, cell.material);
-          this.terrainLayer.addChild(sprite);
+          blocks.push({ x, y, z, material: cell.material });
         }
       }
+    }
+
+    blocks.sort((a, b) => {
+      const aView = this.rotateViewPoint(a.x, a.y);
+      const bView = this.rotateViewPoint(b.x, b.y);
+      const aDepth = aView.x + aView.y + a.z;
+      const bDepth = bView.x + bView.y + b.z;
+
+      if (aDepth !== bDepth) {
+        return aDepth - bDepth;
+      }
+
+      if (aView.y !== bView.y) {
+        return aView.y - bView.y;
+      }
+
+      if (aView.x !== bView.x) {
+        return aView.x - bView.x;
+      }
+
+      return a.z - b.z;
+    });
+
+    for (const block of blocks) {
+      const sprite = this.createTerrainBlock(block.x, block.y, block.z, block.material);
+      this.terrainLayer.addChild(sprite);
     }
   }
 
@@ -437,11 +517,109 @@ export class IsoGame {
 
   private createTerrainBlock(x: number, y: number, z: number, material: MaterialKey): Sprite {
     const sprite = new Sprite(this.terrainTiles[material]);
-    const screen = isoProject(x, y, z + 1);
+    const screen = this.projectWorld(x + 0.5, y + 0.5, z + 1);
     sprite.anchor.set(0.5, 0.5);
     sprite.scale.set(2);
-    sprite.position.set(screen.x, screen.y + TILE_HEIGHT);
+    sprite.position.set(screen.x + this.terrainScreenOffset.x, screen.y + this.terrainScreenOffset.y);
     return sprite;
+  }
+
+  public nudgeTerrainOffset(direction: string): void {
+    const halfWidth = TILE_WIDTH / 2;
+    const halfHeight = TILE_HEIGHT / 2;
+
+    switch (direction) {
+      case 'N':
+        this.terrainScreenOffset.y -= halfHeight;
+        break;
+      case 'S':
+        this.terrainScreenOffset.y += halfHeight;
+        break;
+      case 'E':
+        this.terrainScreenOffset.x += halfWidth;
+        break;
+      case 'W':
+        this.terrainScreenOffset.x -= halfWidth;
+        break;
+      case 'NE':
+        this.terrainScreenOffset.x += halfWidth / 2;
+        this.terrainScreenOffset.y -= halfHeight / 2;
+        break;
+      case 'NW':
+        this.terrainScreenOffset.x -= halfWidth / 2;
+        this.terrainScreenOffset.y -= halfHeight / 2;
+        break;
+      case 'SE':
+        this.terrainScreenOffset.x += halfWidth / 2;
+        this.terrainScreenOffset.y += halfHeight / 2;
+        break;
+      case 'SW':
+        this.terrainScreenOffset.x -= halfWidth / 2;
+        this.terrainScreenOffset.y += halfHeight / 2;
+        break;
+      case 'RESET':
+        this.terrainScreenOffset.x = 0;
+        this.terrainScreenOffset.y = 0;
+        break;
+      default:
+        return;
+    }
+
+    this.rebuildTerrain();
+    this.updateTerrainOffsetStatus();
+  }
+
+  private rotateViewPoint(x: number, y: number): Vec2 {
+    const centerX = this.map.width * 0.5;
+    const centerY = this.map.height * 0.5;
+    const localX = x - centerX;
+    const localY = y - centerY;
+
+    switch (this.viewRotation % 4) {
+      case 1:
+        return { x: localY, y: -localX };
+      case 2:
+        return { x: -localX, y: -localY };
+      case 3:
+        return { x: -localY, y: localX };
+      default:
+        return { x: localX, y: localY };
+    }
+  }
+
+  private projectWorld(x: number, y: number, z: number): Vec2 {
+    const rotated = this.rotateViewPoint(x, y);
+    return {
+      x: (rotated.x - rotated.y) * (TILE_WIDTH / 2),
+      y: (rotated.x + rotated.y) * (TILE_HEIGHT / 2) - z * BLOCK_HEIGHT
+    };
+  }
+
+  private projectVelocity(x: number, y: number): Vec2 {
+    const rotated =
+      this.viewRotation % 4 === 1
+        ? { x: y, y: -x }
+        : this.viewRotation % 4 === 2
+          ? { x: -x, y: -y }
+          : this.viewRotation % 4 === 3
+            ? { x: -y, y: x }
+            : { x, y };
+
+    return {
+      x: (rotated.x - rotated.y) * (TILE_WIDTH / 2),
+      y: (rotated.x + rotated.y) * (TILE_HEIGHT / 2)
+    };
+  }
+
+  private applyMoveCompensation(move: Vec2): Vec2 {
+    const projected = this.projectVelocity(move.x, move.y);
+    const apparentSpeed = length(projected.x, projected.y);
+    const compensation = apparentSpeed > 0 ? BASE_APPARENT_MOVE_SPEED / apparentSpeed : 1;
+
+    return {
+      x: move.x * compensation,
+      y: move.y * compensation
+    };
   }
 
   private getSupportHeight(x: number, y: number): number {
@@ -491,10 +669,22 @@ export class IsoGame {
   }
 
   private update(dt: number): void {
-    const move = this.input.getMoveVector();
+    const jumpPressed = this.input.consumeJump();
+    const rotateDelta = this.input.consumeRotate();
+
+    if (rotateDelta !== 0) {
+      this.viewRotation = (this.viewRotation + rotateDelta % 4 + 4) % 4;
+      this.rebuildTerrain();
+      this.updateCompass();
+      const focus = this.projectWorld(this.player.x, this.player.y, this.player.z + 0.4);
+      this.camera.x = focus.x;
+      this.camera.y = focus.y;
+    }
+
+    const rawMove = this.input.getMoveVector(this.viewRotation);
+    const move = this.applyMoveCompensation(rawMove);
     const desiredX = move.x * MAX_RUN_SPEED;
     const desiredY = move.y * MAX_RUN_SPEED;
-    const jumpPressed = this.input.consumeJump();
 
     if (jumpPressed) {
       this.jumpBufferTimer = JUMP_BUFFER_TIME;
@@ -611,8 +801,10 @@ export class IsoGame {
   }
 
   private updatePlayerAnimation(dt: number): void {
-    const screenVX = this.player.vx - this.player.vy;
-    const screenVY = this.player.vx + this.player.vy;
+    const projectedOrigin = this.projectWorld(0, 0, 0);
+    const projectedVelocity = this.projectWorld(this.player.vx, this.player.vy, 0);
+    const screenVX = projectedVelocity.x - projectedOrigin.x;
+    const screenVY = projectedVelocity.y - projectedOrigin.y;
     const speed = Math.hypot(this.player.vx, this.player.vy);
 
     if (speed > 0.05) {
@@ -635,8 +827,8 @@ export class IsoGame {
 
   private updatePlayerVisuals(): void {
     const groundHeight = this.getSupportHeight(this.player.x, this.player.y);
-    const shadowPoint = isoProject(this.player.x, this.player.y, groundHeight);
-    const bodyPoint = isoProject(this.player.x, this.player.y, this.player.z);
+    const shadowPoint = this.projectWorld(this.player.x, this.player.y, groundHeight);
+    const bodyPoint = this.projectWorld(this.player.x, this.player.y, this.player.z);
     const airHeight = Math.max(0, this.player.z - groundHeight);
     const shadowScale = 1 + Math.min(airHeight * 0.12, 0.35);
     const shadowAlpha = this.player.grounded ? 0.28 : 0.22;
@@ -654,8 +846,29 @@ export class IsoGame {
     this.playerSprite.position.set(bodyPoint.x, bodyPoint.y + TILE_HEIGHT / 2);
   }
 
+  private updateCompass(): void {
+    const rotation = this.viewRotation % 4;
+    const top = VIEW_NAMES[rotation];
+    const right = VIEW_NAMES[(rotation + 1) % 4];
+    const bottom = VIEW_NAMES[(rotation + 2) % 4];
+    const left = VIEW_NAMES[(rotation + 3) % 4];
+
+    this.compassLabels.top.textContent = top;
+    this.compassLabels.right.textContent = right;
+    this.compassLabels.bottom.textContent = bottom;
+    this.compassLabels.left.textContent = left;
+  }
+
+  private updateTerrainOffsetStatus(): void {
+    const xSteps = this.terrainScreenOffset.x / (TILE_WIDTH / 2);
+    const ySteps = this.terrainScreenOffset.y / (TILE_HEIGHT / 2);
+    this.terrainOffsetStatus.textContent =
+      `Terrain offset\nx=${this.terrainScreenOffset.x}px (${xSteps.toFixed(2)} x-half)\n` +
+      `y=${this.terrainScreenOffset.y}px (${ySteps.toFixed(2)} y-half)`;
+  }
+
   private updateCamera(dt: number): void {
-    const focus = isoProject(this.player.x, this.player.y, this.player.z + 0.4);
+    const focus = this.projectWorld(this.player.x, this.player.y, this.player.z + 0.4);
     const smoothing = 1 - Math.exp(-dt * 8);
 
     this.camera.x += (focus.x - this.camera.x) * smoothing;
@@ -672,10 +885,24 @@ export class IsoGame {
 
   private updateHud(): void {
     const ground = this.getSupportHeight(this.player.x, this.player.y);
+    const viewName = VIEW_NAMES[this.viewRotation % VIEW_NAMES.length];
+    const origin = this.projectWorld(0, 0, 0);
+    const positiveX = this.projectWorld(1, 0, 0);
+    const negativeX = this.projectWorld(-1, 0, 0);
+    const positiveY = this.projectWorld(0, 1, 0);
+    const negativeY = this.projectWorld(0, -1, 0);
+
+    const axisSummary =
+      `Axes: +X=${getCompassDirection(positiveX.x - origin.x, positiveX.y - origin.y)} ` +
+      `-X=${getCompassDirection(negativeX.x - origin.x, negativeX.y - origin.y)} ` +
+      `+Y=${getCompassDirection(positiveY.x - origin.x, positiveY.y - origin.y)} ` +
+      `-Y=${getCompassDirection(negativeY.x - origin.x, negativeY.y - origin.y)}`;
+
     this.hudStatus.textContent =
       `Position: ${this.player.x.toFixed(2)}, ${this.player.y.toFixed(2)}, ${this.player.z.toFixed(2)}\n` +
       `Ground: ${ground.toFixed(2)}  |  Vertical speed: ${this.player.vz.toFixed(2)}\n` +
-      `State: ${this.player.grounded ? 'grounded' : 'airborne'}\n` +
+      `State: ${this.player.grounded ? 'grounded' : 'airborne'}  |  View: ${viewName}-up (${this.viewRotation * 90} deg)\n` +
+      `${axisSummary}\n` +
       `Map notes: terrain rendering was reset to a clean painter-style tileset pass. Next step is refining atlas mapping and then reintroducing terrain-aware actor occlusion.`;
   }
 }
