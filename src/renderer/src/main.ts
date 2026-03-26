@@ -12,7 +12,7 @@ if (!root) {
 
 const app = new Application({
   resizeTo: window,
-  antialias: true,
+  antialias: false,
   backgroundAlpha: 0
 });
 

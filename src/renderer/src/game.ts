@@ -41,6 +41,7 @@ type TerrainTiles = Record<MaterialKey, Texture>;
 const TILE_WIDTH = 64;
 const TILE_HEIGHT = 32;
 const BLOCK_HEIGHT = 16;
+const BASE_APPARENT_MOVE_SPEED = (TILE_HEIGHT / 2) * Math.SQRT2;
 const TERRAIN_ATLAS_TILE_SIZE = 32;
 const TERRAIN_ATLAS_COLUMN_PITCH = 34;
 const CHARACTER_FRAME_WIDTH = 16;
@@ -48,14 +49,16 @@ const CHARACTER_FRAME_HEIGHT = 24;
 const CHARACTER_SCALE = 2;
 const MAX_RUN_SPEED = 5.4;
 const GROUND_ACCEL = 18;
-const GROUND_TURN_ACCEL = 26;
+const GROUND_TURN_ACCEL = 34;
+const GROUND_START_ACCEL_FACTOR = 0.35;
+const GROUND_ACCEL_CURVE = 1.5;
 const AIR_ACCEL = 8;
-const GROUND_FRICTION = 10;
+const GROUND_FRICTION = 8;
 const AIR_FRICTION = 1.5;
 const JUMP_SPEED = 9.8;
 const RISE_GRAVITY = 16;
 const LOW_JUMP_GRAVITY = 60;
-const FALL_GRAVITY = 36;
+const FALL_GRAVITY = 42;
 const MAX_JUMP_HOLD_TIME = 0.3;
 const COYOTE_TIME = 0.1;
 const JUMP_BUFFER_TIME = 0.12;
@@ -75,6 +78,8 @@ const approach = (value: number, target: number, delta: number): number => {
 
   return Math.max(value - delta, target);
 };
+
+const lerp = (start: number, end: number, t: number): number => start + (end - start) * t;
 
 const length = (x: number, y: number): number => Math.hypot(x, y);
 
@@ -139,7 +144,16 @@ class InputController {
       y /= magnitude;
     }
 
-    return { x, y };
+    const apparentX = (x - y) * (TILE_WIDTH / 2);
+    const apparentY = (x + y) * (TILE_HEIGHT / 2);
+    const apparentSpeed = length(apparentX, apparentY);
+    const compensation =
+      apparentSpeed > 0 ? BASE_APPARENT_MOVE_SPEED / apparentSpeed : 1;
+
+    return {
+      x: x * compensation,
+      y: y * compensation
+    };
   }
 
   public consumeJump(): boolean {
@@ -494,17 +508,30 @@ export class IsoGame {
       this.coyoteTimer = Math.max(0, this.coyoteTimer - dt);
     }
 
+    const speedRatio = clamp(Math.hypot(this.player.vx, this.player.vy) / MAX_RUN_SPEED, 0, 1);
+    const curvedSpeedRatio = Math.pow(speedRatio, GROUND_ACCEL_CURVE);
+    const groundedRunAccel = lerp(
+      GROUND_ACCEL * GROUND_START_ACCEL_FACTOR,
+      GROUND_ACCEL,
+      curvedSpeedRatio
+    );
+    const groundedTurnAccel = lerp(
+      GROUND_TURN_ACCEL * GROUND_START_ACCEL_FACTOR,
+      GROUND_TURN_ACCEL,
+      curvedSpeedRatio
+    );
+
     const accelX =
       this.player.grounded && desiredX !== 0 && Math.sign(desiredX) !== Math.sign(this.player.vx)
-        ? GROUND_TURN_ACCEL
+        ? groundedTurnAccel
         : this.player.grounded
-          ? GROUND_ACCEL
+          ? groundedRunAccel
           : AIR_ACCEL;
     const accelY =
       this.player.grounded && desiredY !== 0 && Math.sign(desiredY) !== Math.sign(this.player.vy)
-        ? GROUND_TURN_ACCEL
+        ? groundedTurnAccel
         : this.player.grounded
-          ? GROUND_ACCEL
+          ? groundedRunAccel
           : AIR_ACCEL;
 
     this.player.vx = approach(this.player.vx, desiredX, accelX * dt);
@@ -634,9 +661,12 @@ export class IsoGame {
     this.camera.x += (focus.x - this.camera.x) * smoothing;
     this.camera.y += (focus.y - this.camera.y) * smoothing;
 
+    const worldX = this.app.screen.width * 0.5 - this.camera.x;
+    const worldY = this.app.screen.height * 0.38 - this.camera.y;
+
     this.world.position.set(
-      this.app.screen.width * 0.5 - this.camera.x,
-      this.app.screen.height * 0.38 - this.camera.y
+      Math.round(worldX),
+      Math.round(worldY)
     );
   }
 
