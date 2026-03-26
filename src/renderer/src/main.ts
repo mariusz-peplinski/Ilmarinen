@@ -1,7 +1,7 @@
 import './style.css';
 import { Application, Assets, SCALE_MODES, Texture } from 'pixi.js';
 import { IsoGame } from './game';
-import tilesetUrl from '../../../tileset.png?url';
+import tilesetUrl from '../../../new-tileset.png?url';
 import charactersUrl from '../../../characters.png?url';
 
 const root = document.querySelector<HTMLDivElement>('#app');

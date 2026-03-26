@@ -2,7 +2,6 @@ import {
   Application,
   BaseTexture,
   Container,
-  DisplayObject,
   Graphics,
   Rectangle,
   Sprite,
@@ -37,44 +36,27 @@ interface PlayerState {
   grounded: boolean;
 }
 
-interface Renderable {
-  graphic: DisplayObject;
-  minX: number;
-  maxX: number;
-  minY: number;
-  maxY: number;
-  minZ: number;
-  maxZ: number;
-  anchorX: number;
-  anchorY: number;
-  anchorZ: number;
-  tieBreaker: number;
-}
-
-interface TerrainTileSet {
-  top: Texture[];
-  block: Texture[];
-}
-
-type TerrainTiles = Record<MaterialKey, TerrainTileSet>;
+type TerrainTiles = Record<MaterialKey, Texture>;
 
 const TILE_WIDTH = 64;
-const TILE_HEIGHT = 16;
+const TILE_HEIGHT = 32;
 const BLOCK_HEIGHT = 16;
+const TERRAIN_ATLAS_TILE_SIZE = 32;
+const TERRAIN_ATLAS_COLUMN_PITCH = 34;
 const CHARACTER_FRAME_WIDTH = 16;
 const CHARACTER_FRAME_HEIGHT = 24;
 const CHARACTER_SCALE = 2;
-const MAX_RUN_SPEED = 4.8;
+const MAX_RUN_SPEED = 5.4;
 const GROUND_ACCEL = 18;
 const GROUND_TURN_ACCEL = 26;
 const AIR_ACCEL = 8;
 const GROUND_FRICTION = 10;
 const AIR_FRICTION = 1.5;
-const JUMP_SPEED = 6.4;
+const JUMP_SPEED = 9.8;
 const RISE_GRAVITY = 16;
-const LOW_JUMP_GRAVITY = 28;
+const LOW_JUMP_GRAVITY = 60;
 const FALL_GRAVITY = 36;
-const MAX_JUMP_HOLD_TIME = 0.16;
+const MAX_JUMP_HOLD_TIME = 0.3;
 const COYOTE_TIME = 0.1;
 const JUMP_BUFFER_TIME = 0.12;
 const PLAYER_BODY_HEIGHT = 1.2;
@@ -100,39 +82,6 @@ const isoProject = (x: number, y: number, z: number): Vec2 => ({
   x: (x - y) * (TILE_WIDTH / 2),
   y: (x + y) * (TILE_HEIGHT / 2) - z * BLOCK_HEIGHT
 });
-
-const compareRenderables = (a: Renderable, b: Renderable): number => {
-  const epsilon = 0.0001;
-  const aBehindB =
-    a.maxX <= b.minX + epsilon ||
-    a.maxY <= b.minY + epsilon ||
-    a.maxZ <= b.minZ + epsilon;
-  const bBehindA =
-    b.maxX <= a.minX + epsilon ||
-    b.maxY <= a.minY + epsilon ||
-    b.maxZ <= a.minZ + epsilon;
-
-  if (aBehindB && !bBehindA) {
-    return -1;
-  }
-
-  if (bBehindA && !aBehindB) {
-    return 1;
-  }
-
-  const aPoint = isoProject(a.anchorX, a.anchorY, a.anchorZ);
-  const bPoint = isoProject(b.anchorX, b.anchorY, b.anchorZ);
-
-  if (aPoint.y !== bPoint.y) {
-    return aPoint.y - bPoint.y;
-  }
-
-  if (aPoint.x !== bPoint.x) {
-    return aPoint.x - bPoint.x;
-  }
-
-  return a.tieBreaker - b.tieBreaker;
-};
 
 class InputController {
   private readonly keys = new Set<string>();
@@ -349,15 +298,14 @@ export class IsoGame {
   private readonly hudStatus: HTMLDivElement;
   private readonly input = new InputController();
   private readonly world = new Container();
+  private readonly terrainLayer = new Container();
+  private readonly actorLayer = new Container();
   private readonly shadowGraphic = new Graphics();
   private readonly playerSprite = new Sprite();
   private readonly map = createExampleMap();
-  private readonly camera = { x: 0, y: 0 };
-  private readonly renderables: Renderable[] = [];
   private readonly terrainTiles: TerrainTiles;
   private readonly characterFrames: Texture[][];
-  private readonly shadowRenderable: Renderable;
-  private readonly playerRenderable: Renderable;
+  private readonly camera = { x: 0, y: 0 };
   private walkTime = 0;
   private currentDirection = 4;
   private coyoteTimer = 0;
@@ -377,100 +325,49 @@ export class IsoGame {
   public constructor(
     app: Application,
     hudStatus: HTMLDivElement,
-    baseTexture: BaseTexture,
+    terrainBaseTexture: BaseTexture,
     charactersBaseTexture: BaseTexture
   ) {
     this.app = app;
     this.hudStatus = hudStatus;
-    this.terrainTiles = this.createTerrainTiles(baseTexture);
+    this.terrainTiles = this.createTerrainTiles(terrainBaseTexture);
     this.characterFrames = this.createCharacterFrames(charactersBaseTexture);
-    this.shadowRenderable = this.createRenderable(this.shadowGraphic, -4);
-    this.playerRenderable = this.createRenderable(this.playerSprite, -1);
 
-    this.world.sortableChildren = false;
-    this.world.addChild(this.shadowGraphic);
     this.playerSprite.anchor.set(0.5, 1);
-    this.playerSprite.scale.set(CHARACTER_SCALE, CHARACTER_SCALE);
-    this.world.addChild(this.playerSprite);
+    this.playerSprite.scale.set(CHARACTER_SCALE);
+    this.actorLayer.addChild(this.shadowGraphic);
+    this.actorLayer.addChild(this.playerSprite);
+
+    this.world.addChild(this.terrainLayer);
+    this.world.addChild(this.actorLayer);
     this.app.stage.addChild(this.world);
 
-    this.buildTerrain();
-    this.drawPlayer();
-    this.sortWorld();
+    this.rebuildTerrain();
+    this.updatePlayerVisuals();
     this.app.ticker.add(() => {
       const dt = Math.min(this.app.ticker.deltaMS / 1000, 1 / 30);
       this.update(dt);
     });
   }
 
-  private createRenderable(graphic: DisplayObject, tieBreaker: number): Renderable {
-    const renderable: Renderable = {
-      graphic,
-      minX: 0,
-      maxX: 0,
-      minY: 0,
-      maxY: 0,
-      minZ: 0,
-      maxZ: 0,
-      anchorX: 0,
-      anchorY: 0,
-      anchorZ: 0,
-      tieBreaker
-    };
-    this.renderables.push(renderable);
-    return renderable;
-  }
-
-  private sliceTexture(baseTexture: BaseTexture, cellX: number, cellY: number): Texture {
-    return new Texture(baseTexture, new Rectangle(cellX * 32, cellY * 16, 32, 16));
+  private sliceTerrainTexture(baseTexture: BaseTexture, column: number, row: number): Texture {
+    return new Texture(
+      baseTexture,
+      new Rectangle(
+        column * TERRAIN_ATLAS_COLUMN_PITCH,
+        row * TERRAIN_ATLAS_TILE_SIZE,
+        TERRAIN_ATLAS_TILE_SIZE,
+        TERRAIN_ATLAS_TILE_SIZE
+      )
+    );
   }
 
   private createTerrainTiles(baseTexture: BaseTexture): TerrainTiles {
     return {
-      grass: {
-        top: [
-          this.sliceTexture(baseTexture, 2, 2),
-          this.sliceTexture(baseTexture, 2, 4)
-        ],
-        block: [
-          this.sliceTexture(baseTexture, 2, 3),
-          this.sliceTexture(baseTexture, 2, 5)
-        ]
-      },
-      moss: {
-        top: [
-          this.sliceTexture(baseTexture, 2, 4),
-          this.sliceTexture(baseTexture, 2, 2)
-        ],
-        block: [
-          this.sliceTexture(baseTexture, 2, 5),
-          this.sliceTexture(baseTexture, 2, 3)
-        ]
-      },
-      sand: {
-        top: [
-          this.sliceTexture(baseTexture, 3, 2),
-          this.sliceTexture(baseTexture, 3, 4),
-          this.sliceTexture(baseTexture, 3, 6)
-        ],
-        block: [
-          this.sliceTexture(baseTexture, 3, 3),
-          this.sliceTexture(baseTexture, 3, 5),
-          this.sliceTexture(baseTexture, 3, 7)
-        ]
-      },
-      stone: {
-        top: [
-          this.sliceTexture(baseTexture, 4, 2),
-          this.sliceTexture(baseTexture, 4, 4),
-          this.sliceTexture(baseTexture, 4, 6)
-        ],
-        block: [
-          this.sliceTexture(baseTexture, 4, 3),
-          this.sliceTexture(baseTexture, 4, 5),
-          this.sliceTexture(baseTexture, 4, 7)
-        ]
-      }
+      grass: this.sliceTerrainTexture(baseTexture, 1, 0),
+      moss: this.sliceTerrainTexture(baseTexture, 1, 1),
+      sand: this.sliceTerrainTexture(baseTexture, 2, 0),
+      stone: this.sliceTerrainTexture(baseTexture, 3, 0)
     };
   }
 
@@ -493,67 +390,44 @@ export class IsoGame {
     ]);
   }
 
-  private buildTerrain(): void {
-    for (let y = 0; y < this.map.height; y += 1) {
-      for (let x = 0; x < this.map.width; x += 1) {
+  private rebuildTerrain(): void {
+    this.terrainLayer.removeChildren();
+
+    for (let sum = 0; sum < this.map.width + this.map.height - 1; sum += 1) {
+      const yStart = Math.max(0, sum - (this.map.width - 1));
+      const yEnd = Math.min(this.map.height - 1, sum);
+
+      for (let y = yStart; y <= yEnd; y += 1) {
+        const x = sum - y;
         const cell = getCell(this.map, x, y);
 
         for (let z = 0; z < cell.height; z += 1) {
-          const drawTop = z === cell.height - 1;
-          const drawRight = getHeight(this.map, x + 1, y) < z + 1;
-          const drawLeft = getHeight(this.map, x, y + 1) < z + 1;
-
-          if (!drawTop && !drawRight && !drawLeft) {
+          if (!this.isBlockExposed(x, y, z + 1)) {
             continue;
           }
 
-          const sprite =
-            drawTop && !drawRight && !drawLeft
-              ? this.createTopSprite(x, y, z, cell.material)
-              : this.createBlockSprite(x, y, z, cell.material);
-          this.world.addChild(sprite);
-          this.createTerrainRenderable(sprite, x, y, z);
+          const sprite = this.createTerrainBlock(x, y, z, cell.material);
+          this.terrainLayer.addChild(sprite);
         }
       }
     }
   }
 
-  private createBlockSprite(x: number, y: number, z: number, material: MaterialKey): Sprite {
-    const variants = this.terrainTiles[material].block;
-    const texture = variants[Math.abs(x * 17 + y * 31 + z * 13) % variants.length];
-    const sprite = new Sprite(texture);
-    const bottom = isoProject(x + 1, y + 1, z);
-    sprite.anchor.set(0.5, 1);
-    sprite.scale.set(2);
-    sprite.position.set(bottom.x, bottom.y);
-    return sprite;
+  private isBlockExposed(x: number, y: number, level: number): boolean {
+    return (
+      getHeight(this.map, x, y) === level ||
+      getHeight(this.map, x + 1, y) < level ||
+      getHeight(this.map, x, y + 1) < level
+    );
   }
 
-  private createTopSprite(x: number, y: number, z: number, material: MaterialKey): Sprite {
-    const variants = this.terrainTiles[material].top;
-    const texture = variants[Math.abs(x * 17 + y * 31 + z * 13) % variants.length];
-    const sprite = new Sprite(texture);
-    const bottom = isoProject(x + 1, y + 1, z + 1);
-    sprite.anchor.set(0.5, 1);
+  private createTerrainBlock(x: number, y: number, z: number, material: MaterialKey): Sprite {
+    const sprite = new Sprite(this.terrainTiles[material]);
+    const screen = isoProject(x, y, z + 1);
+    sprite.anchor.set(0.5, 0.5);
     sprite.scale.set(2);
-    sprite.position.set(bottom.x, bottom.y);
+    sprite.position.set(screen.x, screen.y + TILE_HEIGHT);
     return sprite;
-  }
-
-  private createTerrainRenderable(graphic: DisplayObject, x: number, y: number, z: number): void {
-    this.renderables.push({
-      graphic,
-      minX: x,
-      maxX: x + 1,
-      minY: y,
-      maxY: y + 1,
-      minZ: z,
-      maxZ: z + 1,
-      anchorX: x + 0.5,
-      anchorY: y + 0.5,
-      anchorZ: z + 0.5,
-      tieBreaker: 0
-    });
   }
 
   private getSupportHeight(x: number, y: number): number {
@@ -637,11 +511,19 @@ export class IsoGame {
     this.player.vy = approach(this.player.vy, desiredY, accelY * dt);
 
     if (move.x === 0) {
-      this.player.vx = approach(this.player.vx, 0, (this.player.grounded ? GROUND_FRICTION : AIR_FRICTION) * dt);
+      this.player.vx = approach(
+        this.player.vx,
+        0,
+        (this.player.grounded ? GROUND_FRICTION : AIR_FRICTION) * dt
+      );
     }
 
     if (move.y === 0) {
-      this.player.vy = approach(this.player.vy, 0, (this.player.grounded ? GROUND_FRICTION : AIR_FRICTION) * dt);
+      this.player.vy = approach(
+        this.player.vy,
+        0,
+        (this.player.grounded ? GROUND_FRICTION : AIR_FRICTION) * dt
+      );
     }
 
     this.moveAxis('x', this.player.vx * dt);
@@ -696,8 +578,7 @@ export class IsoGame {
     }
 
     this.updatePlayerAnimation(dt);
-    this.drawPlayer();
-    this.sortWorld();
+    this.updatePlayerVisuals();
     this.updateCamera(dt);
     this.updateHud();
   }
@@ -722,16 +603,28 @@ export class IsoGame {
 
     const frames = this.characterFrames[this.currentDirection];
     const frameIndex = walking ? Math.floor(this.walkTime / WALK_FRAME_TIME) % 3 : 1;
-
     this.playerSprite.texture = frames[frameIndex];
-    this.playerSprite.scale.set(CHARACTER_SCALE, CHARACTER_SCALE);
   }
 
-  private sortWorld(): void {
-    this.renderables.sort(compareRenderables);
-    for (let index = 0; index < this.renderables.length; index += 1) {
-      this.world.setChildIndex(this.renderables[index].graphic, index);
-    }
+  private updatePlayerVisuals(): void {
+    const groundHeight = this.getSupportHeight(this.player.x, this.player.y);
+    const shadowPoint = isoProject(this.player.x, this.player.y, groundHeight);
+    const bodyPoint = isoProject(this.player.x, this.player.y, this.player.z);
+    const airHeight = Math.max(0, this.player.z - groundHeight);
+    const shadowScale = 1 + Math.min(airHeight * 0.12, 0.35);
+    const shadowAlpha = this.player.grounded ? 0.28 : 0.22;
+
+    this.shadowGraphic.clear();
+    this.shadowGraphic.beginFill(0x000000, shadowAlpha);
+    this.shadowGraphic.drawEllipse(
+      shadowPoint.x,
+      shadowPoint.y + TILE_HEIGHT / 2,
+      12 * shadowScale,
+      6 * shadowScale
+    );
+    this.shadowGraphic.endFill();
+
+    this.playerSprite.position.set(bodyPoint.x, bodyPoint.y + TILE_HEIGHT / 2);
   }
 
   private updateCamera(dt: number): void {
@@ -747,54 +640,12 @@ export class IsoGame {
     );
   }
 
-  private drawPlayer(): void {
-    const groundHeight = this.getSupportHeight(this.player.x, this.player.y);
-    const shadowPoint = isoProject(this.player.x, this.player.y, groundHeight);
-    const bodyPoint = isoProject(this.player.x, this.player.y, this.player.z);
-    const airHeight = Math.max(0, this.player.z - groundHeight);
-    const shadowScale = 1 + Math.min(airHeight * 0.12, 0.35);
-    const shadowAlpha = this.player.grounded ? 0.28 : 0.22;
-    const footY = bodyPoint.y;
-
-    this.shadowGraphic.clear();
-    this.shadowGraphic.beginFill(0x000000, shadowAlpha);
-    this.shadowGraphic.drawEllipse(
-      shadowPoint.x,
-      shadowPoint.y + 6,
-      12 * shadowScale,
-      6 * shadowScale
-    );
-    this.shadowGraphic.endFill();
-
-    this.playerSprite.position.set(bodyPoint.x, footY + 8);
-
-    this.shadowRenderable.minX = this.player.x - 0.22;
-    this.shadowRenderable.maxX = this.player.x + 0.22;
-    this.shadowRenderable.minY = this.player.y - 0.22;
-    this.shadowRenderable.maxY = this.player.y + 0.22;
-    this.shadowRenderable.minZ = groundHeight - 0.02;
-    this.shadowRenderable.maxZ = groundHeight;
-    this.shadowRenderable.anchorX = this.player.x;
-    this.shadowRenderable.anchorY = this.player.y;
-    this.shadowRenderable.anchorZ = groundHeight - 0.01;
-
-    this.playerRenderable.minX = this.player.x - 0.18;
-    this.playerRenderable.maxX = this.player.x + 0.18;
-    this.playerRenderable.minY = this.player.y - 0.18;
-    this.playerRenderable.maxY = this.player.y + 0.18;
-    this.playerRenderable.minZ = this.player.z;
-    this.playerRenderable.maxZ = this.player.z + PLAYER_BODY_HEIGHT;
-    this.playerRenderable.anchorX = this.player.x;
-    this.playerRenderable.anchorY = this.player.y;
-    this.playerRenderable.anchorZ = this.player.z + 0.7;
-  }
-
   private updateHud(): void {
     const ground = this.getSupportHeight(this.player.x, this.player.y);
     this.hudStatus.textContent =
       `Position: ${this.player.x.toFixed(2)}, ${this.player.y.toFixed(2)}, ${this.player.z.toFixed(2)}\n` +
       `Ground: ${ground.toFixed(2)}  |  Vertical speed: ${this.player.vz.toFixed(2)}\n` +
       `State: ${this.player.grounded ? 'grounded' : 'airborne'}\n` +
-      `Map notes: tileset renderer pass is active now; please sanity-check terrain ordering around ledges, walls, and map borders.`;
+      `Map notes: terrain rendering was reset to a clean painter-style tileset pass. Next step is refining atlas mapping and then reintroducing terrain-aware actor occlusion.`;
   }
 }
