@@ -20,11 +20,15 @@ Why this choice:
 - Use an **orthographic camera** with four 90-degree view rotations (`N-up`, `E-up`, `S-up`, `W-up`).
 - Build terrain as real 3D block geometry:
   - each tile cell becomes a box or set of faces in 3D space
-  - tile top/sides use textures from `new-tileset.png`
+  - we are intentionally **keeping cubes** for now because they help with procgen, caves, houses, and removable ceilings/roofs
 - Keep actors as billboard sprites:
   - `characters.png` remains the source sheet
   - sprite anchor stays at the feet
   - jumping is real vertical movement in world `z`
+- Handle actor-vs-terrain occlusion with a **local multi-pass rule**, not a global sorter:
+  - most terrain renders normally
+  - nearby terrain that should appear in front of an actor is rendered in a later pass
+  - this keeps cube terrain while avoiding a full return to 2D sorting logic
 
 ## What We Keep
 
@@ -61,6 +65,8 @@ Goal: prove the camera model and sprite billboarding.
 
 ## Phase 2: Terrain
 
+Current status: in progress
+
 - Convert map cells into 3D terrain meshes.
 - Start simple:
   - one box per visible height layer
@@ -70,6 +76,20 @@ Goal: prove the camera model and sprite billboarding.
   - instancing for repeated blocks
 
 Goal: correct terrain shape and occlusion before gameplay polish.
+
+## Phase 2A: Local Actor Occlusion
+
+- Keep cube terrain and billboard actors.
+- Remove billboard bias experiments once the new pass is in place.
+- Classify only nearby terrain blocks around each actor into:
+  - normal terrain
+  - terrain that must render after the actor
+- Render in passes:
+  - normal terrain
+  - actor
+  - front terrain
+
+Goal: preserve the cube workflow while fixing the most visible billboard/cube clipping cases.
 
 ## Phase 3: Actor
 
@@ -105,6 +125,7 @@ Goal: parity with current movement behavior.
 - Our terrain atlas is pre-rendered isometric art, not authored as neutral 3D textures. We may need to crop or reinterpret it carefully for top/side texturing.
 - Three.js sprites are easy; animated atlas handling is extra work we must implement ourselves.
 - We should expect a temporary regression period while movement and collision are reconnected.
+- Keeping cubes means actor occlusion will need some custom logic near walls and cliffs. This is acceptable, but we should keep it local to nearby terrain so performance stays predictable.
 
 ## Recommended Execution Strategy
 

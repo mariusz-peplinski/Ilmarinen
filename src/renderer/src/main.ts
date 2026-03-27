@@ -47,5 +47,4 @@ const loadImage = async (src: string): Promise<HTMLImageElement> =>
   });
 
 const charactersImage = await loadImage(charactersUrl);
-
 new ThreeIsoGame(root, hudStatus, compass, charactersImage);

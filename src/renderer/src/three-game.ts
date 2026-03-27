@@ -22,6 +22,18 @@ import {
 
 type MaterialKey = 'grass' | 'stone' | 'sand' | 'moss';
 
+interface TerrainMaterialSet {
+  top: MeshLambertMaterial;
+  sideX: MeshLambertMaterial;
+  sideZ: MeshLambertMaterial;
+  bottom: MeshLambertMaterial;
+}
+
+interface TerrainMaterialVariants {
+  opaque: TerrainMaterialSet;
+  front: TerrainMaterialSet;
+}
+
 interface Cell {
   height: number;
   material: MaterialKey;
@@ -55,6 +67,28 @@ interface PlayerState {
   grounded: boolean;
 }
 
+interface TerrainBlockInstance {
+  x: number;
+  y: number;
+  z: number;
+  material: MaterialKey;
+  mesh: Mesh;
+}
+
+interface OcclusionTuning {
+  lateralRange: number;
+  frontMin: number;
+  frontMax: number;
+  minHeightAboveFeet: number;
+  actorHeightPadding: number;
+}
+
+interface DragState {
+  pointerId: number;
+  lastX: number;
+  lastY: number;
+}
+
 const MAX_RUN_SPEED = 5.4;
 const GROUND_ACCEL = 18;
 const GROUND_TURN_ACCEL = 34;
@@ -73,6 +107,7 @@ const JUMP_BUFFER_TIME = 0.12;
 const STEP_HEIGHT = 0.2;
 const GROUND_SNAP = 0.08;
 const MAP_EDGE_PADDING = 0.02;
+const PLAYER_COLLISION_RADIUS = 0.2;
 const WALK_FRAME_TIME = 0.12;
 const PLAYER_BODY_HEIGHT = 1.2;
 const VIEW_NAMES = ['N', 'E', 'S', 'W'] as const;
@@ -81,6 +116,13 @@ const CHARACTER_FRAME_WIDTH = 16;
 const CHARACTER_FRAME_HEIGHT = 24;
 const CHARACTER_SCALE = 1.35;
 const FRUSTUM_HEIGHT = 18;
+const DEFAULT_OCCLUSION_TUNING: OcclusionTuning = {
+  lateralRange: 0.4,
+  frontMin: 0.7,
+  frontMax: 2.75,
+  minHeightAboveFeet: 0,
+  actorHeightPadding: 0.9
+};
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.max(min, Math.min(max, value));
@@ -372,20 +414,25 @@ export class ThreeIsoGame {
   private readonly actorGroup = new Group();
   private readonly input = new InputController();
   private readonly map = createExampleMap();
+  private readonly terrainBlocks: TerrainBlockInstance[] = [];
   private readonly frameTextures: CanvasTexture[][];
   private readonly spriteMaterial: SpriteMaterial;
   private readonly playerSprite: Sprite;
   private readonly shadowMesh: Mesh;
-  private readonly materialPalette = {
-    grass: new MeshLambertMaterial({ color: new Color('#92c65e') }),
-    moss: new MeshLambertMaterial({ color: new Color('#64884c') }),
-    sand: new MeshLambertMaterial({ color: new Color('#cfb070') }),
-    stone: new MeshLambertMaterial({ color: new Color('#b3b6c1') })
-  } as const;
+  private readonly materialPalette: Record<MaterialKey, TerrainMaterialVariants> = {
+    grass: this.createTerrainMaterialVariants('#92c65e'),
+    moss: this.createTerrainMaterialVariants('#64884c'),
+    sand: this.createTerrainMaterialVariants('#cfb070'),
+    stone: this.createTerrainMaterialVariants('#b3b6c1')
+  };
   private readonly blockGeometry = new BoxGeometry(1, 1, 1);
   private readonly cameraFocus = new Vector3();
   private readonly cameraDesiredFocus = new Vector3();
   private readonly screenVelocity = new Vector2();
+  private readonly occlusionTuning: OcclusionTuning = { ...DEFAULT_OCCLUSION_TUNING };
+  private dragState: DragState | null = null;
+  private cameraYaw = Math.PI / 4;
+  private cameraPitch = 0.62;
   private walkTime = 0;
   private currentDirection = 4;
   private viewRotation = 0;
@@ -445,7 +492,9 @@ export class ThreeIsoGame {
     this.spriteMaterial = new SpriteMaterial({
       map: this.frameTextures[this.currentDirection][1],
       transparent: true,
-      alphaTest: 0.25
+      alphaTest: 0.25,
+      depthWrite: false,
+      depthTest: false
     });
     this.playerSprite = new Sprite(this.spriteMaterial);
     this.playerSprite.center.set(0.5, 0);
@@ -472,6 +521,11 @@ export class ThreeIsoGame {
     this.updateCamera(1 / 60, true);
     this.handleResize();
     window.addEventListener('resize', this.handleResize);
+    this.renderer.domElement.addEventListener('pointerdown', this.handlePointerDown);
+    this.renderer.domElement.addEventListener('pointermove', this.handlePointerMove);
+    this.renderer.domElement.addEventListener('pointerup', this.handlePointerUp);
+    this.renderer.domElement.addEventListener('pointercancel', this.handlePointerUp);
+    this.renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
     this.renderer.setAnimationLoop(this.animate);
   }
 
@@ -487,6 +541,42 @@ export class ThreeIsoGame {
     this.camera.updateProjectionMatrix();
 
     this.renderer.setSize(width, height, false);
+  };
+
+  private readonly handlePointerDown = (event: PointerEvent): void => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    this.dragState = {
+      pointerId: event.pointerId,
+      lastX: event.clientX,
+      lastY: event.clientY
+    };
+    this.renderer.domElement.setPointerCapture(event.pointerId);
+  };
+
+  private readonly handlePointerMove = (event: PointerEvent): void => {
+    if (!this.dragState || this.dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const dx = event.clientX - this.dragState.lastX;
+    const dy = event.clientY - this.dragState.lastY;
+    this.dragState.lastX = event.clientX;
+    this.dragState.lastY = event.clientY;
+
+    this.cameraYaw -= dx * 0.01;
+    this.cameraPitch = clamp(this.cameraPitch + dy * 0.006, 0.25, 1.2);
+  };
+
+  private readonly handlePointerUp = (event: PointerEvent): void => {
+    if (!this.dragState || this.dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    this.renderer.domElement.releasePointerCapture(event.pointerId);
+    this.dragState = null;
   };
 
   private readonly animate = (): void => {
@@ -511,20 +601,141 @@ export class ThreeIsoGame {
     return label;
   }
 
+  private createTerrainMaterialSet(baseHex: string, transparent: boolean): TerrainMaterialSet {
+    const top = new Color(baseHex);
+    const sideX = top.clone().multiplyScalar(0.68);
+    const sideZ = top.clone().multiplyScalar(0.56);
+    const bottom = top.clone().multiplyScalar(0.42);
+    const common = {
+      transparent,
+      opacity: 1,
+      depthWrite: true
+    };
+
+    return {
+      sideX: new MeshLambertMaterial({ color: sideX, ...common }),
+      sideZ: new MeshLambertMaterial({ color: sideZ, ...common }),
+      top: new MeshLambertMaterial({ color: top, ...common }),
+      bottom: new MeshLambertMaterial({ color: bottom, ...common })
+    };
+  }
+
+  private createTerrainMaterialVariants(baseHex: string): TerrainMaterialVariants {
+    return {
+      opaque: this.createTerrainMaterialSet(baseHex, false),
+      front: this.createTerrainMaterialSet(baseHex, true)
+    };
+  }
+
+  private isBlockExposed(x: number, y: number, z: number): boolean {
+    const level = z + 1;
+
+    return (
+      getHeight(this.map, x, y) === level ||
+      getHeight(this.map, x + 1, y) < level ||
+      getHeight(this.map, x - 1, y) < level ||
+      getHeight(this.map, x, y + 1) < level ||
+      getHeight(this.map, x, y - 1) < level
+    );
+  }
+
   private buildTerrain(): void {
     this.terrainGroup.clear();
+    this.terrainBlocks.length = 0;
 
     for (let y = 0; y < this.map.height; y += 1) {
       for (let x = 0; x < this.map.width; x += 1) {
         const cell = getCell(this.map, x, y);
         for (let z = 0; z < cell.height; z += 1) {
-          const block = new Mesh(this.blockGeometry, this.materialPalette[cell.material]);
+          if (!this.isBlockExposed(x, y, z)) {
+            continue;
+          }
+
+          const materials = this.materialPalette[cell.material].opaque;
+          const block = new Mesh(this.blockGeometry, [
+            materials.sideX,
+            materials.sideX,
+            materials.top,
+            materials.bottom,
+            materials.sideZ,
+            materials.sideZ
+          ]);
           block.position.set(x + 0.5, z + 0.5, y + 0.5);
           block.receiveShadow = false;
           block.castShadow = false;
+          block.renderOrder = 0;
           this.terrainGroup.add(block);
+          this.terrainBlocks.push({ x, y, z, material: cell.material, mesh: block });
         }
       }
+    }
+  }
+
+  private updateTerrainOcclusion(): void {
+    const basis = this.getPlaneBasis();
+    const actorFootX = this.player.x;
+    const actorFootY = this.player.y;
+    const actorFootZ = this.player.z;
+    const actorTopZ = this.player.z + PLAYER_BODY_HEIGHT;
+    const {
+      lateralRange,
+      frontMin,
+      frontMax,
+      minHeightAboveFeet,
+      actorHeightPadding
+    } = this.occlusionTuning;
+
+    for (const block of this.terrainBlocks) {
+      const footprintPoints = [
+        { x: block.x, y: block.y },
+        { x: block.x + 1, y: block.y },
+        { x: block.x, y: block.y + 1 },
+        { x: block.x + 1, y: block.y + 1 }
+      ];
+      let minLateral = Infinity;
+      let maxLateral = -Infinity;
+      let minFrontness = Infinity;
+      let maxFrontness = -Infinity;
+
+      for (const point of footprintPoints) {
+        const deltaX = point.x - actorFootX;
+        const deltaY = point.y - actorFootY;
+        const lateral = deltaX * basis.rightNorm.x + deltaY * basis.rightNorm.y;
+        const frontness = -(deltaX * basis.topNorm.x + deltaY * basis.topNorm.y);
+        minLateral = Math.min(minLateral, lateral);
+        maxLateral = Math.max(maxLateral, lateral);
+        minFrontness = Math.min(minFrontness, frontness);
+        maxFrontness = Math.max(maxFrontness, frontness);
+      }
+
+      const blockTop = block.z + 1;
+      const blockBottom = block.z;
+      const overlapsActorLane = maxLateral >= -lateralRange && minLateral <= lateralRange;
+      const isFrontFacing = maxFrontness >= frontMin && minFrontness <= frontMax;
+      const risesAboveFeet = blockTop > actorFootZ + minHeightAboveFeet;
+      const intersectsActorHeight = blockBottom < actorTopZ + actorHeightPadding;
+      const shouldRenderInFront =
+        overlapsActorLane && isFrontFacing && risesAboveFeet && intersectsActorHeight;
+      const materials = this.materialPalette[block.material];
+
+      block.mesh.renderOrder = shouldRenderInFront ? 20 : 0;
+      block.mesh.material = shouldRenderInFront
+        ? [
+            materials.front.sideX,
+            materials.front.sideX,
+            materials.front.top,
+            materials.front.bottom,
+            materials.front.sideZ,
+            materials.front.sideZ
+          ]
+        : [
+            materials.opaque.sideX,
+            materials.opaque.sideX,
+            materials.opaque.top,
+            materials.opaque.bottom,
+            materials.opaque.sideZ,
+            materials.opaque.sideZ
+          ];
     }
   }
 
@@ -558,8 +769,93 @@ export class ThreeIsoGame {
     return getHeight(this.map, Math.floor(x), Math.floor(y));
   }
 
+  private getCollisionProbePoints(x: number, y: number): Vec2[] {
+    const r = PLAYER_COLLISION_RADIUS;
+
+    return [
+      { x, y },
+      { x: x + r, y },
+      { x: x - r, y },
+      { x, y: y + r },
+      { x, y: y - r },
+      { x: x + r * 0.7071, y: y + r * 0.7071 },
+      { x: x - r * 0.7071, y: y + r * 0.7071 },
+      { x: x + r * 0.7071, y: y - r * 0.7071 },
+      { x: x - r * 0.7071, y: y - r * 0.7071 }
+    ];
+  }
+
+  private resolveGroundedPenetration(): void {
+    const radius = PLAYER_COLLISION_RADIUS;
+    const footZ = this.player.z;
+
+    for (let iteration = 0; iteration < 4; iteration += 1) {
+      let moved = false;
+      const minTileX = Math.max(0, Math.floor(this.player.x - radius) - 1);
+      const maxTileX = Math.min(this.map.width - 1, Math.floor(this.player.x + radius) + 1);
+      const minTileY = Math.max(0, Math.floor(this.player.y - radius) - 1);
+      const maxTileY = Math.min(this.map.height - 1, Math.floor(this.player.y + radius) + 1);
+
+      for (let tileY = minTileY; tileY <= maxTileY; tileY += 1) {
+        for (let tileX = minTileX; tileX <= maxTileX; tileX += 1) {
+          if (getHeight(this.map, tileX, tileY) <= footZ + 0.02) {
+            continue;
+          }
+
+          const nearestX = clamp(this.player.x, tileX, tileX + 1);
+          const nearestY = clamp(this.player.y, tileY, tileY + 1);
+          let deltaX = this.player.x - nearestX;
+          let deltaY = this.player.y - nearestY;
+          let distance = Math.hypot(deltaX, deltaY);
+
+          if (distance === 0) {
+            const tileCenterX = tileX + 0.5;
+            const tileCenterY = tileY + 0.5;
+            deltaX = this.player.x - tileCenterX;
+            deltaY = this.player.y - tileCenterY;
+            if (Math.abs(deltaX) > Math.abs(deltaY)) {
+              deltaX = Math.sign(deltaX || 1);
+              deltaY = 0;
+            } else {
+              deltaX = 0;
+              deltaY = Math.sign(deltaY || 1);
+            }
+            distance = Math.hypot(deltaX, deltaY);
+          }
+
+          if (distance >= radius) {
+            continue;
+          }
+
+          const push = (radius - distance) + 0.001;
+          this.player.x = clamp(
+            this.player.x + (deltaX / distance) * push,
+            MAP_EDGE_PADDING + radius,
+            this.map.width - MAP_EDGE_PADDING - radius
+          );
+          this.player.y = clamp(
+            this.player.y + (deltaY / distance) * push,
+            MAP_EDGE_PADDING + radius,
+            this.map.height - MAP_EDGE_PADDING - radius
+          );
+          moved = true;
+        }
+      }
+
+      if (!moved) {
+        break;
+      }
+    }
+  }
+
   private isColliding(x: number, y: number, footZ: number): boolean {
-    return this.getSupportHeight(x, y) > footZ + 0.02;
+    for (const point of this.getCollisionProbePoints(x, y)) {
+      if (this.getSupportHeight(point.x, point.y) > footZ + 0.02) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private moveAxis(axis: 'x' | 'y', amount: number): void {
@@ -569,11 +865,19 @@ export class ThreeIsoGame {
 
     const nextX =
       axis === 'x'
-        ? clamp(this.player.x + amount, MAP_EDGE_PADDING, this.map.width - MAP_EDGE_PADDING)
+        ? clamp(
+            this.player.x + amount,
+            MAP_EDGE_PADDING + PLAYER_COLLISION_RADIUS,
+            this.map.width - MAP_EDGE_PADDING - PLAYER_COLLISION_RADIUS
+          )
         : this.player.x;
     const nextY =
       axis === 'y'
-        ? clamp(this.player.y + amount, MAP_EDGE_PADDING, this.map.height - MAP_EDGE_PADDING)
+        ? clamp(
+            this.player.y + amount,
+            MAP_EDGE_PADDING + PLAYER_COLLISION_RADIUS,
+            this.map.height - MAP_EDGE_PADDING - PLAYER_COLLISION_RADIUS
+          )
         : this.player.y;
 
     const supportHeight = this.getSupportHeight(nextX, nextY);
@@ -606,6 +910,7 @@ export class ThreeIsoGame {
 
     if (rotateDelta !== 0) {
       this.viewRotation = (this.viewRotation + (rotateDelta % 4) + 4) % 4;
+      this.cameraYaw = Math.PI / 4 + (Math.PI / 2) * this.viewRotation;
       this.updateCompass();
       this.updateCamera(dt, true);
     }
@@ -698,6 +1003,8 @@ export class ThreeIsoGame {
         this.player.grounded = false;
       } else {
         this.player.z = supportHeight;
+        this.resolveGroundedPenetration();
+        this.player.z = this.getSupportHeight(this.player.x, this.player.y);
       }
     }
 
@@ -730,6 +1037,8 @@ export class ThreeIsoGame {
         this.player.vz = 0;
         this.player.grounded = true;
         this.jumpHoldTimer = 0;
+        this.resolveGroundedPenetration();
+        this.player.z = this.getSupportHeight(this.player.x, this.player.y);
       }
     }
 
@@ -779,6 +1088,8 @@ export class ThreeIsoGame {
     this.shadowMesh.position.set(this.player.x, groundHeight + 0.01, this.player.y);
     this.shadowMesh.scale.setScalar(shadowScale);
     this.shadowMesh.renderOrder = 1;
+
+    this.updateTerrainOcclusion();
   }
 
   private updateCamera(dt: number, snap: boolean): void {
@@ -793,13 +1104,12 @@ export class ThreeIsoGame {
 
     const distance = 11.5;
     const height = 11.5;
-    const offsets = [
-      new Vector3(distance, height, distance),
-      new Vector3(-distance, height, distance),
-      new Vector3(-distance, height, -distance),
-      new Vector3(distance, height, -distance)
-    ];
-    const offset = offsets[this.viewRotation % offsets.length];
+    const horizontalDistance = distance * Math.cos(this.cameraPitch);
+    const offset = new Vector3(
+      Math.cos(this.cameraYaw) * horizontalDistance,
+      height * Math.sin(this.cameraPitch),
+      Math.sin(this.cameraYaw) * horizontalDistance
+    );
 
     this.camera.position.copy(this.cameraFocus).add(offset);
     this.camera.lookAt(this.cameraFocus);
@@ -830,6 +1140,6 @@ export class ThreeIsoGame {
       `Ground: ${ground.toFixed(2)}  |  Vertical speed: ${this.player.vz.toFixed(2)}\n` +
       `State: ${this.player.grounded ? 'grounded' : 'airborne'}  |  View: ${viewName}-up (${this.viewRotation * 90} deg)\n` +
       `${axisSummary}\n` +
-      `Renderer: Three.js phase 1 preview. Terrain is now real 3D block geometry; actor is a billboard sprite.`;
+      `Renderer: Three.js terrain pass in progress. Exposed cube tiles are shaded in 3D; actor is a billboard sprite.`;
   }
 }
