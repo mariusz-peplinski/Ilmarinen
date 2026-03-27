@@ -1,7 +1,5 @@
 import './style.css';
-import { Application, Assets, SCALE_MODES, Texture } from 'pixi.js';
-import { IsoGame } from './game';
-import tilesetUrl from '../../../new-tileset.png?url';
+import { ThreeIsoGame } from './three-game';
 import charactersUrl from '../../../characters.png?url';
 
 const root = document.querySelector<HTMLDivElement>('#app');
@@ -10,14 +8,6 @@ if (!root) {
   throw new Error('Expected #app root element.');
 }
 
-const app = new Application({
-  resizeTo: window,
-  antialias: false,
-  backgroundAlpha: 0
-});
-
-root.appendChild(app.view as HTMLCanvasElement);
-
 const hud = document.createElement('div');
 hud.className = 'hud';
 hud.innerHTML = `
@@ -25,7 +15,8 @@ hud.innerHTML = `
   <p>
     <strong>Move:</strong> WASD or arrows<br />
     <strong>Jump:</strong> Space<br />
-    Free movement, terrain collision, steerable jumps, z-aware occlusion, and a follow camera are all active in this build.
+    <strong>Rotate View:</strong> Tab / Shift+Tab<br />
+    We are now in the Three.js migration pass: real 3D terrain, an orthographic camera, and billboard actor sprites.
   </p>
   <div class="hud-status" id="hud-status"></div>
 `;
@@ -47,50 +38,14 @@ compass.innerHTML = `
 `;
 root.appendChild(compass);
 
-const offsetPanel = document.createElement('div');
-offsetPanel.className = 'offset-panel';
-offsetPanel.innerHTML = `
-  <h2>Terrain Offset</h2>
-  <div class="offset-status" id="terrain-offset-status"></div>
-  <div class="offset-grid">
-    <button type="button" data-offset="NW">NW</button>
-    <button type="button" data-offset="N">N</button>
-    <button type="button" data-offset="NE">NE</button>
-    <button type="button" data-offset="W">W</button>
-    <button type="button" data-offset="RESET">Reset</button>
-    <button type="button" data-offset="E">E</button>
-    <button type="button" data-offset="SW">SW</button>
-    <button type="button" data-offset="S">S</button>
-    <button type="button" data-offset="SE">SE</button>
-  </div>
-`;
-root.appendChild(offsetPanel);
-
-const terrainOffsetStatus = offsetPanel.querySelector<HTMLDivElement>('#terrain-offset-status');
-
-if (!terrainOffsetStatus) {
-  throw new Error('Expected terrain offset status element.');
-}
-
-const tilesetTexture = await Assets.load<Texture>(tilesetUrl);
-tilesetTexture.baseTexture.scaleMode = SCALE_MODES.NEAREST;
-const charactersTexture = await Assets.load<Texture>(charactersUrl);
-charactersTexture.baseTexture.scaleMode = SCALE_MODES.NEAREST;
-
-const game = new IsoGame(
-  app,
-  hudStatus,
-  compass,
-  terrainOffsetStatus,
-  tilesetTexture.baseTexture,
-  charactersTexture.baseTexture
-);
-
-for (const button of offsetPanel.querySelectorAll<HTMLButtonElement>('[data-offset]')) {
-  button.addEventListener('click', () => {
-    const direction = button.dataset.offset;
-    if (direction) {
-      game.nudgeTerrainOffset(direction);
-    }
+const loadImage = async (src: string): Promise<HTMLImageElement> =>
+  new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`Failed to load image: ${src}`));
+    image.src = src;
   });
-}
+
+const charactersImage = await loadImage(charactersUrl);
+
+new ThreeIsoGame(root, hudStatus, compass, charactersImage);

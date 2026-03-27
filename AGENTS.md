@@ -13,6 +13,21 @@ This repository is an Electron + Vite + TypeScript desktop game prototype using 
   - `style.css`: HUD and overlay styling.
 - Root-level art assets such as `characters.png` and `new-tileset.png` are loaded directly by the renderer.
 
+## Asset Notes
+
+`new-tileset.png` is the active terrain atlas.
+
+- Atlas cells are `32x32`.
+- Columns are separated by a `2px` gutter.
+- Rows have no gutter.
+- Each tile graphic is bottom-aligned within its `32x32` cell.
+- The visible tile art is effectively `32x24`:
+  - `8px` bottom wall/thickness
+  - `16px` diamond top surface
+- The empty top area in the cell is intentional and may later hold non-colliding decoration.
+
+Keep this geometry in mind when changing projection, anchors, sorting, or atlas slicing.
+
 ## Build, Test, and Development Commands
 
 - `npm run dev`: start the Electron app in development mode with hot reload.

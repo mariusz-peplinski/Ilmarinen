@@ -34,9 +34,11 @@
     }
   },
   "dependencies": {
-    "pixi.js": "^7.4.3"
+    "pixi.js": "^7.4.3",
+    "three": "^0.183.2"
   },
   "devDependencies": {
+    "@types/three": "^0.183.1",
     "electron": "^41.0.4",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",

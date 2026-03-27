@@ -2,6 +2,7 @@ import {
   Application,
   BaseTexture,
   Container,
+  DisplayObject,
   Graphics,
   Rectangle,
   Sprite,
@@ -43,6 +44,32 @@ interface PlayerState {
   grounded: boolean;
 }
 
+interface SortableEntry {
+  kind: 'terrain' | 'actor' | 'shadow';
+  graphic: DisplayObject;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  minZ: number;
+  maxZ: number;
+  anchorX: number;
+  anchorY: number;
+  anchorZ: number;
+  screenOffsetX: number;
+  screenOffsetY: number;
+  tieBreaker: number;
+}
+
+interface RotatedBounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  minZ: number;
+  maxZ: number;
+}
+
 type TerrainTiles = Record<MaterialKey, Texture>;
 
 const TILE_WIDTH = 64;
@@ -69,6 +96,7 @@ const FALL_GRAVITY = 42;
 const MAX_JUMP_HOLD_TIME = 0.3;
 const COYOTE_TIME = 0.1;
 const JUMP_BUFFER_TIME = 0.12;
+const SHADOW_SURFACE_OFFSET = 0.01;
 const PLAYER_BODY_HEIGHT = 1.2;
 const MAP_EDGE_PADDING = 0.02;
 const STEP_HEIGHT = 0.2;
@@ -139,24 +167,40 @@ class InputController {
     });
   }
 
-  public getMoveVector(): Vec2 {
+  public getMoveVector(viewRotation: number): Vec2 {
+    const cardinalVectors: Vec2[] = [
+      { x: -1, y: -1 },
+      { x: 1, y: -1 },
+      { x: 1, y: 1 },
+      { x: -1, y: 1 }
+    ];
+
+    const top = cardinalVectors[viewRotation % 4];
+    const right = cardinalVectors[(viewRotation + 1) % 4];
+    const bottom = cardinalVectors[(viewRotation + 2) % 4];
+    const left = cardinalVectors[(viewRotation + 3) % 4];
+
     let x = 0;
     let y = 0;
 
     if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) {
-      y -= 1;
+      x += top.x;
+      y += top.y;
     }
 
     if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) {
-      y += 1;
+      x += bottom.x;
+      y += bottom.y;
     }
 
     if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) {
-      x -= 1;
+      x += left.x;
+      y += left.y;
     }
 
     if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) {
-      x += 1;
+      x += right.x;
+      y += right.y;
     }
 
     const magnitude = length(x, y);
@@ -334,8 +378,8 @@ export class IsoGame {
   private readonly terrainOffsetStatus: HTMLDivElement;
   private readonly input = new InputController();
   private readonly world = new Container();
-  private readonly terrainLayer = new Container();
-  private readonly actorLayer = new Container();
+  private readonly sceneLayer = new Container();
+  private readonly anchorDebugGraphic = new Graphics();
   private readonly shadowGraphic = new Graphics();
   private readonly playerSprite = new Sprite();
   private readonly map = createExampleMap();
@@ -343,6 +387,10 @@ export class IsoGame {
   private readonly characterFrames: Texture[][];
   private readonly camera = { x: 0, y: 0 };
   private readonly terrainScreenOffset: Vec2 = { x: 0, y: TILE_HEIGHT / 2 };
+  private terrainEntries: SortableEntry[] = [];
+  private playerEntry!: SortableEntry;
+  private shadowEntry!: SortableEntry;
+  private showSortAnchors = true;
   private walkTime = 0;
   private currentDirection = 4;
   private viewRotation = 0;
@@ -382,11 +430,15 @@ export class IsoGame {
 
     this.playerSprite.anchor.set(0.5, 1);
     this.playerSprite.scale.set(CHARACTER_SCALE);
-    this.actorLayer.addChild(this.shadowGraphic);
-    this.actorLayer.addChild(this.playerSprite);
+    this.shadowEntry = this.createSortableEntry(this.shadowGraphic, -10);
+    this.shadowEntry.kind = 'shadow';
+    this.playerEntry = this.createSortableEntry(this.playerSprite, 1000);
+    this.playerEntry.kind = 'actor';
 
-    this.world.addChild(this.terrainLayer);
-    this.world.addChild(this.actorLayer);
+    this.sceneLayer.addChild(this.shadowGraphic);
+    this.sceneLayer.addChild(this.playerSprite);
+    this.world.addChild(this.sceneLayer);
+    this.world.addChild(this.anchorDebugGraphic);
     this.app.stage.addChild(this.world);
 
     this.rebuildTerrain();
@@ -410,6 +462,30 @@ export class IsoGame {
     }
 
     return label;
+  }
+
+  private createSortableEntry(graphic: DisplayObject, tieBreaker: number): SortableEntry {
+    return {
+      kind: 'terrain',
+      graphic,
+      minX: 0,
+      maxX: 0,
+      minY: 0,
+      maxY: 0,
+      minZ: 0,
+      maxZ: 0,
+      anchorX: 0,
+      anchorY: 0,
+      anchorZ: 0,
+      screenOffsetX: 0,
+      screenOffsetY: 0,
+      tieBreaker
+    };
+  }
+
+  public setShowSortAnchors(show: boolean): void {
+    this.showSortAnchors = show;
+    this.updateAnchorDebugGraphic();
   }
 
   private sliceTerrainTexture(baseTexture: BaseTexture, column: number, row: number): Texture {
@@ -453,7 +529,11 @@ export class IsoGame {
   }
 
   private rebuildTerrain(): void {
-    this.terrainLayer.removeChildren();
+    for (const entry of this.terrainEntries) {
+      this.sceneLayer.removeChild(entry.graphic);
+    }
+
+    this.terrainEntries = [];
     const blocks: TerrainBlock[] = [];
 
     for (let y = 0; y < this.map.height; y += 1) {
@@ -491,10 +571,15 @@ export class IsoGame {
       return a.z - b.z;
     });
 
-    for (const block of blocks) {
-      const sprite = this.createTerrainBlock(block.x, block.y, block.z, block.material);
-      this.terrainLayer.addChild(sprite);
+    for (const [index, block] of blocks.entries()) {
+      const { sprite, entry } = this.createTerrainBlock(block.x, block.y, block.z, block.material);
+      entry.tieBreaker = index;
+      this.terrainEntries.push(entry);
+      this.sceneLayer.addChild(sprite);
     }
+
+    this.updateSceneSort();
+    this.updateAnchorDebugGraphic();
   }
 
   private isBlockExposed(x: number, y: number, level: number): boolean {
@@ -505,13 +590,32 @@ export class IsoGame {
     );
   }
 
-  private createTerrainBlock(x: number, y: number, z: number, material: MaterialKey): Sprite {
+  private createTerrainBlock(
+    x: number,
+    y: number,
+    z: number,
+    material: MaterialKey
+  ): { sprite: Sprite; entry: SortableEntry } {
     const sprite = new Sprite(this.terrainTiles[material]);
     const screen = this.projectWorld(x + 0.5, y + 0.5, z + 1);
     sprite.anchor.set(0.5, 0.5);
     sprite.scale.set(2);
     sprite.position.set(screen.x + this.terrainScreenOffset.x, screen.y + this.terrainScreenOffset.y);
-    return sprite;
+
+    const entry = this.createSortableEntry(sprite, 0);
+    entry.minX = x;
+    entry.maxX = x + 1;
+    entry.minY = y;
+    entry.maxY = y + 1;
+    entry.minZ = z;
+    entry.maxZ = z + 1;
+    entry.anchorX = x + 0.5;
+    entry.anchorY = y + 0.5;
+    entry.anchorZ = z;
+    entry.screenOffsetX = this.terrainScreenOffset.x;
+    entry.screenOffsetY = this.terrainScreenOffset.y - 1;
+
+    return { sprite, entry };
   }
 
   public nudgeTerrainOffset(direction: string): void {
@@ -557,6 +661,158 @@ export class IsoGame {
 
     this.rebuildTerrain();
     this.updateTerrainOffsetStatus();
+  }
+
+  private getRotatedBounds(entry: SortableEntry): RotatedBounds {
+    const corners = [
+      this.rotateViewPoint(entry.minX, entry.minY),
+      this.rotateViewPoint(entry.minX, entry.maxY),
+      this.rotateViewPoint(entry.maxX, entry.minY),
+      this.rotateViewPoint(entry.maxX, entry.maxY)
+    ];
+    const xs = corners.map((corner) => corner.x);
+    const ys = corners.map((corner) => corner.y);
+
+    return {
+      minX: Math.min(...xs),
+      maxX: Math.max(...xs),
+      minY: Math.min(...ys),
+      maxY: Math.max(...ys),
+      minZ: entry.minZ,
+      maxZ: entry.maxZ
+    };
+  }
+
+  private compareSortableEntries(a: SortableEntry, b: SortableEntry): number {
+    const epsilon = 0.0001;
+
+    if (a.kind === 'actor' && b.kind === 'terrain') {
+      return this.compareActorAndTerrain(a, b);
+    }
+
+    if (a.kind === 'terrain' && b.kind === 'actor') {
+      return -this.compareActorAndTerrain(b, a);
+    }
+
+    const aBounds = this.getRotatedBounds(a);
+    const bBounds = this.getRotatedBounds(b);
+    const aBelowB = aBounds.maxZ <= bBounds.minZ + epsilon;
+    const bBelowA = bBounds.maxZ <= aBounds.minZ + epsilon;
+    const aBehindGroundB =
+      aBounds.maxX <= bBounds.minX + epsilon ||
+      aBounds.maxY <= bBounds.minY + epsilon;
+    const bBehindGroundA =
+      bBounds.maxX <= aBounds.minX + epsilon ||
+      bBounds.maxY <= aBounds.minY + epsilon;
+
+    if (aBelowB && !bBelowA) {
+      return -1;
+    }
+
+    if (bBelowA && !aBelowB) {
+      return 1;
+    }
+
+    if (aBehindGroundB && !bBehindGroundA) {
+      return -1;
+    }
+
+    if (bBehindGroundA && !aBehindGroundB) {
+      return 1;
+    }
+
+    const aPoint = this.projectWorld(a.anchorX, a.anchorY, a.anchorZ);
+    const bPoint = this.projectWorld(b.anchorX, b.anchorY, b.anchorZ);
+    const aScreenY = aPoint.y + a.screenOffsetY;
+    const bScreenY = bPoint.y + b.screenOffsetY;
+    const aScreenX = aPoint.x + a.screenOffsetX;
+    const bScreenX = bPoint.x + b.screenOffsetX;
+
+    if (aScreenY !== bScreenY) {
+      return aScreenY - bScreenY;
+    }
+
+    if (aScreenX !== bScreenX) {
+      return aScreenX - bScreenX;
+    }
+
+    return a.tieBreaker - b.tieBreaker;
+  }
+
+  private compareActorAndTerrain(actor: SortableEntry, terrain: SortableEntry): number {
+    const epsilon = 0.0001;
+    const actorBounds = this.getRotatedBounds(actor);
+    const terrainBounds = this.getRotatedBounds(terrain);
+    const actorFootZ = actor.minZ;
+    const actorMinDepth = actorBounds.minX + actorBounds.minY;
+    const actorMaxDepth = actorBounds.maxX + actorBounds.maxY;
+    const terrainMinDepth = terrainBounds.minX + terrainBounds.minY;
+    const terrainMaxDepth = terrainBounds.maxX + terrainBounds.maxY;
+
+    if (terrain.maxZ <= actorFootZ + epsilon) {
+      return 1;
+    }
+
+    if (terrainMaxDepth <= actorMinDepth + epsilon) {
+      return 1;
+    }
+
+    if (terrainMinDepth >= actorMaxDepth - epsilon) {
+      return -1;
+    }
+
+    const actorPoint = this.projectWorld(actor.anchorX, actor.anchorY, actor.anchorZ);
+    const terrainPoint = this.projectWorld(terrain.anchorX, terrain.anchorY, terrain.anchorZ);
+    const actorScreenY = actorPoint.y + actor.screenOffsetY;
+    const terrainScreenY = terrainPoint.y + terrain.screenOffsetY;
+    const actorScreenX = actorPoint.x + actor.screenOffsetX;
+    const terrainScreenX = terrainPoint.x + terrain.screenOffsetX;
+
+    if (actorScreenY !== terrainScreenY) {
+      return actorScreenY - terrainScreenY;
+    }
+
+    if (actorScreenX !== terrainScreenX) {
+      return actorScreenX - terrainScreenX;
+    }
+
+    return actor.tieBreaker - terrain.tieBreaker;
+  }
+
+  private updateSceneSort(): void {
+    const entries = [...this.terrainEntries, this.shadowEntry, this.playerEntry];
+    entries.sort((a, b) => this.compareSortableEntries(a, b));
+
+    for (const [index, entry] of entries.entries()) {
+      this.sceneLayer.setChildIndex(entry.graphic, index);
+    }
+  }
+
+  private drawAnchor(entry: SortableEntry, color: number, radius: number): void {
+    const point = this.projectWorld(entry.anchorX, entry.anchorY, entry.anchorZ);
+    this.anchorDebugGraphic.beginFill(color, 0.95);
+    this.anchorDebugGraphic.drawCircle(
+      point.x + entry.screenOffsetX,
+      point.y + entry.screenOffsetY,
+      radius
+    );
+    this.anchorDebugGraphic.endFill();
+  }
+
+  private updateAnchorDebugGraphic(): void {
+    this.anchorDebugGraphic.clear();
+    this.anchorDebugGraphic.visible = this.showSortAnchors;
+
+    if (!this.showSortAnchors) {
+      return;
+    }
+
+    for (const entry of this.terrainEntries) {
+      this.drawAnchor(entry, 0xffb347, 1.75);
+    }
+
+    this.drawAnchor(this.shadowEntry, 0x8b5cf6, 2.5);
+    this.drawAnchor(this.playerEntry, 0x33d1ff, 3);
   }
 
   private rotateViewPoint(x: number, y: number): Vec2 {
@@ -676,9 +932,17 @@ export class IsoGame {
       this.camera.y = focus.y;
     }
 
-    const move = this.input.getMoveVector();
-    const desiredScreenX = move.x * SCREEN_MAX_RUN_SPEED;
-    const desiredScreenY = move.y * SCREEN_MAX_RUN_SPEED;
+    const move = this.input.getMoveVector(this.viewRotation);
+    const desiredScreenDirection = this.projectVelocity(move.x, move.y);
+    const desiredScreenMagnitude = length(desiredScreenDirection.x, desiredScreenDirection.y);
+    const desiredScreenX =
+      desiredScreenMagnitude > 0
+        ? (desiredScreenDirection.x / desiredScreenMagnitude) * SCREEN_MAX_RUN_SPEED
+        : 0;
+    const desiredScreenY =
+      desiredScreenMagnitude > 0
+        ? (desiredScreenDirection.y / desiredScreenMagnitude) * SCREEN_MAX_RUN_SPEED
+        : 0;
 
     if (jumpPressed) {
       this.jumpBufferTimer = JUMP_BUFFER_TIME;
@@ -730,7 +994,7 @@ export class IsoGame {
     screenVelocity.x = approach(screenVelocity.x, desiredScreenX, accelX * dt);
     screenVelocity.y = approach(screenVelocity.y, desiredScreenY, accelY * dt);
 
-    if (move.x === 0) {
+    if (desiredScreenX === 0) {
       screenVelocity.x = approach(
         screenVelocity.x,
         0,
@@ -738,7 +1002,7 @@ export class IsoGame {
       );
     }
 
-    if (move.y === 0) {
+    if (desiredScreenY === 0) {
       screenVelocity.y = approach(
         screenVelocity.y,
         0,
@@ -851,6 +1115,33 @@ export class IsoGame {
     this.shadowGraphic.endFill();
 
     this.playerSprite.position.set(bodyPoint.x, bodyPoint.y + TILE_HEIGHT / 2);
+
+    this.shadowEntry.minX = this.player.x - 0.25;
+    this.shadowEntry.maxX = this.player.x + 0.25;
+    this.shadowEntry.minY = this.player.y - 0.25;
+    this.shadowEntry.maxY = this.player.y + 0.25;
+    this.shadowEntry.minZ = groundHeight + SHADOW_SURFACE_OFFSET;
+    this.shadowEntry.maxZ = groundHeight + SHADOW_SURFACE_OFFSET;
+    this.shadowEntry.anchorX = this.player.x;
+    this.shadowEntry.anchorY = this.player.y;
+    this.shadowEntry.anchorZ = groundHeight + SHADOW_SURFACE_OFFSET;
+    this.shadowEntry.screenOffsetX = 0;
+    this.shadowEntry.screenOffsetY = TILE_HEIGHT / 2;
+
+    this.playerEntry.minX = this.player.x - 0.18;
+    this.playerEntry.maxX = this.player.x + 0.18;
+    this.playerEntry.minY = this.player.y - 0.18;
+    this.playerEntry.maxY = this.player.y + 0.18;
+    this.playerEntry.minZ = this.player.z;
+    this.playerEntry.maxZ = this.player.z + PLAYER_BODY_HEIGHT;
+    this.playerEntry.anchorX = this.player.x;
+    this.playerEntry.anchorY = this.player.y;
+    this.playerEntry.anchorZ = this.player.z;
+    this.playerEntry.screenOffsetX = 0;
+    this.playerEntry.screenOffsetY = TILE_HEIGHT / 2;
+
+    this.updateSceneSort();
+    this.updateAnchorDebugGraphic();
   }
 
   private updateCompass(): void {

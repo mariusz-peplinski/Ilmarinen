@@ -36,6 +36,8 @@ body {
 
 canvas {
   display: block;
+  position: absolute;
+  inset: 0;
 }
 
 .hud {
@@ -165,6 +167,15 @@ canvas {
   font-size: 12px;
   color: var(--text-soft);
   white-space: pre-line;
+}
+
+.offset-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-soft);
 }
 
 .offset-grid {
