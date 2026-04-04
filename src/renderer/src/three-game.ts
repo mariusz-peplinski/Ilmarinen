@@ -2,6 +2,7 @@ import {
   AmbientLight,
   CanvasTexture,
   Color,
+  BufferGeometry,
   DynamicDrawUsage,
   Float32BufferAttribute,
   Group,
@@ -83,17 +84,26 @@ interface NpcState {
   shadow: Mesh;
 }
 
+type TerrainSideDirection = 'east' | 'west' | 'south' | 'north';
+
+interface TerrainOpaqueTopColorSpan {
+  material: MaterialKey;
+  heightTintBaseOpacity: number;
+  startVertex: number;
+  vertexCount: number;
+}
+
 interface TerrainChunkRender {
-  opaqueTopMesh: InstancedMesh | null;
+  opaqueTopMesh: Mesh | null;
   frontTopMesh: InstancedMesh | null;
-  opaqueSideMesh: InstancedMesh | null;
+  opaqueSideMesh: Mesh | null;
   frontSideMesh: InstancedMesh | null;
+  opaqueTopColorSpans: TerrainOpaqueTopColorSpan[];
 }
 
 interface TerrainFaceBinding {
   type: 'top' | 'side';
   rotationY: number;
-  opaqueIndex: number;
   frontIndex: number;
 }
 
@@ -108,6 +118,28 @@ interface TerrainBlockInstance {
   topFace: TerrainFaceBinding | null;
   sideFaces: TerrainFaceBinding[];
   currentFront: boolean;
+}
+
+interface TerrainBlockBuildData {
+  x: number;
+  y: number;
+  z: number;
+  material: MaterialKey;
+  hasTop: boolean;
+  sideDirections: TerrainSideDirection[];
+}
+
+interface TerrainChunkBuildData {
+  chunkX: number;
+  chunkY: number;
+  blocks: TerrainBlockBuildData[];
+}
+
+interface TerrainGeometryBuffers {
+  positions: number[];
+  normals: number[];
+  colors: number[];
+  indices: number[];
 }
 
 interface OcclusionTuning {
@@ -156,6 +188,7 @@ const PLAYER_COLLISION_RADIUS = 0.2;
 const NPC_COLLISION_RADIUS = 0.18;
 const WALK_FRAME_TIME = 0.12;
 const PLAYER_BODY_HEIGHT = 1.2;
+const OCCLUSION_HEIGHT_EPSILON = 0.01;
 const VIEW_NAMES = ['N', 'E', 'S', 'W'] as const;
 const SCREEN_DIRECTION_NAMES = ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'] as const;
 const CHARACTER_FRAME_WIDTH = 16;
@@ -607,6 +640,19 @@ function createTerrainSideGeometry(): PlaneGeometry {
   return geometry;
 }
 
+function getTerrainSideRotation(direction: TerrainSideDirection): number {
+  switch (direction) {
+    case 'east':
+      return Math.PI / 2;
+    case 'west':
+      return -Math.PI / 2;
+    case 'south':
+      return 0;
+    case 'north':
+      return Math.PI;
+  }
+}
+
 function loadFrameTexture(
   image: HTMLImageElement,
   column: number,
@@ -686,7 +732,10 @@ export class ThreeIsoGame {
     vertexColors: true,
     transparent: true,
     opacity: 1,
-    depthWrite: true
+    depthWrite: true,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2
   });
   private readonly reusableTerrainMatrix = new Matrix4();
   private readonly hiddenTerrainMatrix = new Matrix4();
@@ -776,6 +825,7 @@ export class ThreeIsoGame {
     this.scene.add(this.sunLight.target);
 
     this.scene.add(this.terrainGroup);
+    this.applyTerrainScale();
     this.scene.add(this.actorGroup);
 
     this.buildTerrain();
@@ -1007,18 +1057,103 @@ export class ThreeIsoGame {
     return mesh;
   }
 
+  private createTerrainStaticMesh(geometry: BufferGeometry, renderOrder: number): Mesh {
+    const mesh = new Mesh(geometry, this.terrainOpaqueMaterial);
+    mesh.castShadow = this.sunLight.castShadow;
+    mesh.receiveShadow = this.sunLight.castShadow;
+    mesh.renderOrder = renderOrder;
+    mesh.frustumCulled = false;
+    mesh.matrixAutoUpdate = false;
+    mesh.updateMatrix();
+    return mesh;
+  }
+
+  private createTerrainGeometryBuffers(): TerrainGeometryBuffers {
+    return {
+      positions: [],
+      normals: [],
+      colors: [],
+      indices: []
+    };
+  }
+
+  private writeTerrainQuadColor(
+    colorBuffer: number[],
+    startVertex: number,
+    vertexCount: number,
+    color: Color
+  ): void {
+    for (let index = 0; index < vertexCount; index += 1) {
+      const colorIndex = (startVertex + index) * 3;
+      colorBuffer[colorIndex] = color.r;
+      colorBuffer[colorIndex + 1] = color.g;
+      colorBuffer[colorIndex + 2] = color.b;
+    }
+  }
+
+  private appendTerrainQuad(
+    buffers: TerrainGeometryBuffers,
+    vertices: Array<[number, number, number]>,
+    normal: [number, number, number],
+    color: Color
+  ): { startVertex: number; vertexCount: number } {
+    const startVertex = buffers.positions.length / 3;
+
+    for (const [x, y, z] of vertices) {
+      buffers.positions.push(x, y, z);
+      buffers.normals.push(normal[0], normal[1], normal[2]);
+    }
+
+    this.writeTerrainQuadColor(buffers.colors, startVertex, vertices.length, color);
+    buffers.indices.push(
+      startVertex,
+      startVertex + 1,
+      startVertex + 2,
+      startVertex,
+      startVertex + 2,
+      startVertex + 3
+    );
+
+    return {
+      startVertex,
+      vertexCount: vertices.length
+    };
+  }
+
+  private createTerrainBufferGeometry(buffers: TerrainGeometryBuffers): BufferGeometry | null {
+    if (buffers.indices.length === 0) {
+      return null;
+    }
+
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new Float32BufferAttribute(buffers.positions, 3));
+    geometry.setAttribute('normal', new Float32BufferAttribute(buffers.normals, 3));
+    geometry.setAttribute('color', new Float32BufferAttribute(buffers.colors, 3));
+    geometry.setIndex(buffers.indices);
+    geometry.computeBoundingSphere();
+    return geometry;
+  }
+
+  private getTerrainTopRenderColor(material: MaterialKey, heightTintBaseOpacity: number): Color {
+    const baseColor = this.getTopBaseColor(material);
+    const tintColor = this.getHeightTintColor(material);
+    const tintMix = heightTintBaseOpacity * this.heightTintStrength;
+    return baseColor.lerp(tintColor, tintMix);
+  }
+
+  private getTerrainSideColor(material: MaterialKey, direction: TerrainSideDirection): Color {
+    const shade = direction === 'east' || direction === 'west' ? 0.7 : 0.58;
+    return this.getTopBaseColor(material).multiplyScalar(shade);
+  }
+
   private writeTerrainFaceTransform(
     mesh: InstancedMesh,
     index: number,
     block: TerrainBlockInstance,
     face: TerrainFaceBinding
   ): void {
-    this.reusableTerrainPosition.set(
-      block.x + 0.5,
-      block.z * this.blockHeightScale + this.blockHeightScale / 2,
-      block.y + 0.5
-    );
-    this.reusableTerrainScale.set(1, this.blockHeightScale, 1);
+    this.reusableTerrainPosition.set(block.x + 0.5, block.z + 0.5, block.y + 0.5);
+    this.reusableTerrainScale.set(1, 1, 1);
     this.reusableTerrainQuaternion.setFromAxisAngle(this.reusableTerrainAxisY, face.rotationY);
     this.reusableTerrainMatrix.compose(
       this.reusableTerrainPosition,
@@ -1028,12 +1163,12 @@ export class ThreeIsoGame {
     mesh.setMatrixAt(index, this.reusableTerrainMatrix);
   }
 
-  private getTerrainFaceMesh(chunk: TerrainChunkRender, face: TerrainFaceBinding, renderInFront: boolean): InstancedMesh | null {
+  private getFrontTerrainFaceMesh(chunk: TerrainChunkRender, face: TerrainFaceBinding): InstancedMesh | null {
     if (face.type === 'top') {
-      return renderInFront ? chunk.frontTopMesh : chunk.opaqueTopMesh;
+      return chunk.frontTopMesh;
     }
 
-    return renderInFront ? chunk.frontSideMesh : chunk.opaqueSideMesh;
+    return chunk.frontSideMesh;
   }
 
   private setTerrainBlockFrontState(block: TerrainBlockInstance, renderInFront: boolean): void {
@@ -1045,59 +1180,73 @@ export class ThreeIsoGame {
     const allFaces = block.topFace ? [block.topFace, ...block.sideFaces] : block.sideFaces;
 
     for (const face of allFaces) {
-      const opaqueMesh = this.getTerrainFaceMesh(block.chunk, face, false);
-      const frontMesh = this.getTerrainFaceMesh(block.chunk, face, true);
+      const frontMesh = this.getFrontTerrainFaceMesh(block.chunk, face);
+
+      if (!frontMesh) {
+        continue;
+      }
 
       if (renderInFront) {
-        opaqueMesh?.setMatrixAt(face.opaqueIndex, this.hiddenTerrainMatrix);
-        if (frontMesh) {
-          this.writeTerrainFaceTransform(frontMesh, face.frontIndex, block, face);
-        }
+        this.writeTerrainFaceTransform(frontMesh, face.frontIndex, block, face);
       } else {
-        if (opaqueMesh) {
-          this.writeTerrainFaceTransform(opaqueMesh, face.opaqueIndex, block, face);
-        }
-        frontMesh?.setMatrixAt(face.frontIndex, this.hiddenTerrainMatrix);
+        frontMesh.setMatrixAt(face.frontIndex, this.hiddenTerrainMatrix);
       }
     }
 
-    if (block.chunk.opaqueTopMesh) {
-      block.chunk.opaqueTopMesh.instanceMatrix.needsUpdate = true;
-    }
     if (block.chunk.frontTopMesh) {
       block.chunk.frontTopMesh.instanceMatrix.needsUpdate = true;
-    }
-    if (block.chunk.opaqueSideMesh) {
-      block.chunk.opaqueSideMesh.instanceMatrix.needsUpdate = true;
     }
     if (block.chunk.frontSideMesh) {
       block.chunk.frontSideMesh.instanceMatrix.needsUpdate = true;
     }
   }
 
-  private updateTerrainBlockColor(block: TerrainBlockInstance): void {
-    const baseColor = this.getTopBaseColor(block.material);
-    const tintColor = this.getHeightTintColor(block.material);
-    const tintMix = block.heightTintBaseOpacity * this.heightTintStrength;
-    block.renderColor.copy(baseColor).lerp(tintColor, tintMix);
+  private updateChunkOpaqueTopColors(chunk: TerrainChunkRender): void {
+    const colorAttribute = chunk.opaqueTopMesh?.geometry.getAttribute('color');
 
-    if (block.topFace) {
-      block.chunk.opaqueTopMesh?.setColorAt(block.topFace.opaqueIndex, block.renderColor);
-      block.chunk.frontTopMesh?.setColorAt(block.topFace.frontIndex, block.renderColor);
+    if (!colorAttribute) {
+      return;
     }
+
+    const colorArray = colorAttribute.array as Float32Array;
+
+    for (const span of chunk.opaqueTopColorSpans) {
+      const color = this.getTerrainTopRenderColor(span.material, span.heightTintBaseOpacity);
+      for (let index = 0; index < span.vertexCount; index += 1) {
+        const colorIndex = (span.startVertex + index) * 3;
+        colorArray[colorIndex] = color.r;
+        colorArray[colorIndex + 1] = color.g;
+        colorArray[colorIndex + 2] = color.b;
+      }
+    }
+
+    colorAttribute.needsUpdate = true;
+  }
+
+  private updateTerrainBlockColor(block: TerrainBlockInstance): void {
+    if (!block.topFace) {
+      return;
+    }
+
+    block.renderColor.copy(
+      this.getTerrainTopRenderColor(block.material, block.heightTintBaseOpacity)
+    );
+    block.chunk.frontTopMesh?.setColorAt(block.topFace.frontIndex, block.renderColor);
   }
 
   private createActorSpriteMaterial(
     frameTexture: CanvasTexture,
-    tintHex = '#ffffff'
+    tintHex = '#ffffff',
+    depthTest = true,
+    depthWrite = true
   ): SpriteMaterial {
     return new SpriteMaterial({
       map: frameTexture,
       color: new Color(tintHex),
       transparent: true,
       alphaTest: 0.25,
-      depthWrite: false,
-      depthTest: false
+      depthWrite,
+      depthTest
     });
   }
 
@@ -1175,7 +1324,7 @@ export class ThreeIsoGame {
       randomSeed: number
     ): NpcState => {
       const frameTexture = this.frameTextures[4][1];
-      const spriteMaterial = this.createActorSpriteMaterial(frameTexture, tintHex);
+      const spriteMaterial = this.createActorSpriteMaterial(frameTexture, tintHex, true);
       const sprite = this.createActorSprite(spriteMaterial);
       const shadow = this.createActorShadow();
       sprite.visible = false;
@@ -1265,6 +1414,280 @@ export class ThreeIsoGame {
     }
   }
 
+  private applyTerrainScale(): void {
+    this.terrainGroup.scale.set(1, this.blockHeightScale, 1);
+    this.terrainGroup.updateMatrixWorld();
+  }
+
+  private buildChunkOpaqueTopMesh(
+    chunkBlocks: TerrainBlockBuildData[],
+    chunkStartX: number,
+    chunkStartY: number,
+    chunkWidth: number,
+    chunkHeight: number
+  ): { mesh: Mesh | null; colorSpans: TerrainOpaqueTopColorSpan[] } {
+    const maxChunkHeight = chunkBlocks.reduce((highest, block) => Math.max(highest, block.z + 1), 0);
+    const topPlanes = Array.from({ length: maxChunkHeight }, () =>
+      Array.from({ length: chunkHeight }, () => Array<MaterialKey | null>(chunkWidth).fill(null))
+    );
+
+    for (const block of chunkBlocks) {
+      if (!block.hasTop) {
+        continue;
+      }
+
+      topPlanes[block.z][block.y - chunkStartY][block.x - chunkStartX] = block.material;
+    }
+
+    const buffers = this.createTerrainGeometryBuffers();
+    const colorSpans: TerrainOpaqueTopColorSpan[] = [];
+
+    for (let z = 0; z < topPlanes.length; z += 1) {
+      const plane = topPlanes[z];
+      const visited = Array.from({ length: chunkHeight }, () => Array<boolean>(chunkWidth).fill(false));
+
+      for (let localY = 0; localY < chunkHeight; localY += 1) {
+        for (let localX = 0; localX < chunkWidth; localX += 1) {
+          const material = plane[localY][localX];
+          if (!material || visited[localY][localX]) {
+            continue;
+          }
+
+          let width = 1;
+          while (
+            localX + width < chunkWidth &&
+            plane[localY][localX + width] === material &&
+            !visited[localY][localX + width]
+          ) {
+            width += 1;
+          }
+
+          let height = 1;
+          let canGrow = true;
+          while (localY + height < chunkHeight && canGrow) {
+            for (let offsetX = 0; offsetX < width; offsetX += 1) {
+              if (
+                plane[localY + height][localX + offsetX] !== material ||
+                visited[localY + height][localX + offsetX]
+              ) {
+                canGrow = false;
+                break;
+              }
+            }
+
+            if (canGrow) {
+              height += 1;
+            }
+          }
+
+          for (let offsetY = 0; offsetY < height; offsetY += 1) {
+            for (let offsetX = 0; offsetX < width; offsetX += 1) {
+              visited[localY + offsetY][localX + offsetX] = true;
+            }
+          }
+
+          const worldX = chunkStartX + localX;
+          const worldY = chunkStartY + localY;
+          const topColor = this.getTerrainTopRenderColor(
+            material,
+            z > 0 ? Math.min(0.7, z * 0.1) : 0
+          );
+          const quad = this.appendTerrainQuad(
+            buffers,
+            [
+              [worldX, z + 1, worldY],
+              [worldX, z + 1, worldY + height],
+              [worldX + width, z + 1, worldY + height],
+              [worldX + width, z + 1, worldY]
+            ],
+            [0, 1, 0],
+            topColor
+          );
+          colorSpans.push({
+            material,
+            heightTintBaseOpacity: z > 0 ? Math.min(0.7, z * 0.1) : 0,
+            startVertex: quad.startVertex,
+            vertexCount: quad.vertexCount
+          });
+        }
+      }
+    }
+
+    const geometry = this.createTerrainBufferGeometry(buffers);
+    return {
+      mesh: geometry ? this.createTerrainStaticMesh(geometry, 0) : null,
+      colorSpans
+    };
+  }
+
+  private buildChunkOpaqueSideMesh(
+    chunkBlocks: TerrainBlockBuildData[],
+    chunkStartX: number,
+    chunkStartY: number,
+    chunkWidth: number,
+    chunkHeight: number
+  ): Mesh | null {
+    const maxChunkHeight = chunkBlocks.reduce((highest, block) => Math.max(highest, block.z + 1), 0);
+    const makePlanes = (planeCount: number, runLength: number): Array<Array<Array<MaterialKey | null>>> =>
+      Array.from({ length: planeCount }, () =>
+        Array.from({ length: maxChunkHeight }, () => Array<MaterialKey | null>(runLength).fill(null))
+      );
+
+    const northPlanes = makePlanes(chunkHeight + 1, chunkWidth);
+    const southPlanes = makePlanes(chunkHeight + 1, chunkWidth);
+    const westPlanes = makePlanes(chunkWidth + 1, chunkHeight);
+    const eastPlanes = makePlanes(chunkWidth + 1, chunkHeight);
+
+    for (const block of chunkBlocks) {
+      const localX = block.x - chunkStartX;
+      const localY = block.y - chunkStartY;
+
+      for (const direction of block.sideDirections) {
+        switch (direction) {
+          case 'north':
+            northPlanes[localY][block.z][localX] = block.material;
+            break;
+          case 'south':
+            southPlanes[localY + 1][block.z][localX] = block.material;
+            break;
+          case 'west':
+            westPlanes[localX][block.z][localY] = block.material;
+            break;
+          case 'east':
+            eastPlanes[localX + 1][block.z][localY] = block.material;
+            break;
+        }
+      }
+    }
+
+    const buffers = this.createTerrainGeometryBuffers();
+    const appendGreedyPlanes = (
+      planes: Array<Array<Array<MaterialKey | null>>>,
+      direction: TerrainSideDirection,
+      planeToWorld: (planeIndex: number) => number
+    ): void => {
+      const normalByDirection: Record<TerrainSideDirection, [number, number, number]> = {
+        north: [0, 0, -1],
+        south: [0, 0, 1],
+        east: [1, 0, 0],
+        west: [-1, 0, 0]
+      };
+
+      for (let planeIndex = 0; planeIndex < planes.length; planeIndex += 1) {
+        const plane = planes[planeIndex];
+        const heightLevels = plane.length;
+        const runLength = plane[0]?.length ?? 0;
+        const visited = Array.from({ length: heightLevels }, () => Array<boolean>(runLength).fill(false));
+
+        for (let z = 0; z < heightLevels; z += 1) {
+          for (let run = 0; run < runLength; run += 1) {
+            const material = plane[z][run];
+            if (!material || visited[z][run]) {
+              continue;
+            }
+
+            let width = 1;
+            while (
+              run + width < runLength &&
+              plane[z][run + width] === material &&
+              !visited[z][run + width]
+            ) {
+              width += 1;
+            }
+
+            let height = 1;
+            let canGrow = true;
+            while (z + height < heightLevels && canGrow) {
+              for (let offset = 0; offset < width; offset += 1) {
+                if (
+                  plane[z + height][run + offset] !== material ||
+                  visited[z + height][run + offset]
+                ) {
+                  canGrow = false;
+                  break;
+                }
+              }
+              if (canGrow) {
+                height += 1;
+              }
+            }
+
+            for (let offsetZ = 0; offsetZ < height; offsetZ += 1) {
+              for (let offsetRun = 0; offsetRun < width; offsetRun += 1) {
+                visited[z + offsetZ][run + offsetRun] = true;
+              }
+            }
+
+            const sideColor = this.getTerrainSideColor(material, direction);
+            const planeWorld = planeToWorld(planeIndex);
+
+            if (direction === 'north') {
+              const worldX = chunkStartX + run;
+              this.appendTerrainQuad(
+                buffers,
+                [
+                  [worldX + width, z, planeWorld],
+                  [worldX, z, planeWorld],
+                  [worldX, z + height, planeWorld],
+                  [worldX + width, z + height, planeWorld]
+                ],
+                normalByDirection[direction],
+                sideColor
+              );
+            } else if (direction === 'south') {
+              const worldX = chunkStartX + run;
+              this.appendTerrainQuad(
+                buffers,
+                [
+                  [worldX, z, planeWorld],
+                  [worldX + width, z, planeWorld],
+                  [worldX + width, z + height, planeWorld],
+                  [worldX, z + height, planeWorld]
+                ],
+                normalByDirection[direction],
+                sideColor
+              );
+            } else if (direction === 'west') {
+              const worldY = chunkStartY + run;
+              this.appendTerrainQuad(
+                buffers,
+                [
+                  [planeWorld, z, worldY],
+                  [planeWorld, z, worldY + width],
+                  [planeWorld, z + height, worldY + width],
+                  [planeWorld, z + height, worldY]
+                ],
+                normalByDirection[direction],
+                sideColor
+              );
+            } else {
+              const worldY = chunkStartY + run;
+              this.appendTerrainQuad(
+                buffers,
+                [
+                  [planeWorld, z, worldY + width],
+                  [planeWorld, z, worldY],
+                  [planeWorld, z + height, worldY],
+                  [planeWorld, z + height, worldY + width]
+                ],
+                normalByDirection[direction],
+                sideColor
+              );
+            }
+          }
+        }
+      }
+    };
+
+    appendGreedyPlanes(northPlanes, 'north', (planeIndex) => chunkStartY + planeIndex);
+    appendGreedyPlanes(southPlanes, 'south', (planeIndex) => chunkStartY + planeIndex);
+    appendGreedyPlanes(westPlanes, 'west', (planeIndex) => chunkStartX + planeIndex);
+    appendGreedyPlanes(eastPlanes, 'east', (planeIndex) => chunkStartX + planeIndex);
+
+    const geometry = this.createTerrainBufferGeometry(buffers);
+    return geometry ? this.createTerrainStaticMesh(geometry, 0) : null;
+  }
+
   private refreshLighting(): void {
     this.refreshTerrainShadowFlags();
     this.updateTerrainOcclusion();
@@ -1293,13 +1716,17 @@ export class ThreeIsoGame {
   }
 
   private refreshTerrainReadability(): void {
+    for (const chunk of this.terrainChunks) {
+      this.updateChunkOpaqueTopColors(chunk);
+    }
+
     for (const block of this.terrainBlocks) {
       this.updateTerrainBlockColor(block);
     }
 
     for (const chunk of this.terrainChunks) {
-      const topMeshes = [chunk.opaqueTopMesh, chunk.frontTopMesh, chunk.opaqueSideMesh, chunk.frontSideMesh];
-      for (const mesh of topMeshes) {
+      const frontMeshes = [chunk.frontTopMesh, chunk.frontSideMesh];
+      for (const mesh of frontMeshes) {
         if (mesh?.instanceColor) {
           mesh.instanceColor.needsUpdate = true;
         }
@@ -1323,17 +1750,7 @@ export class ThreeIsoGame {
     this.terrainGroup.clear();
     this.terrainBlocks.length = 0;
     this.terrainChunks.length = 0;
-    const chunkBlockMap = new Map<
-      string,
-      Array<{
-        x: number;
-        y: number;
-        z: number;
-        material: MaterialKey;
-        hasTop: boolean;
-        sideRotations: number[];
-      }>
-    >();
+    const chunkBlockMap = new Map<string, TerrainChunkBuildData>();
 
     for (let y = 0; y < this.map.height; y += 1) {
       for (let x = 0; x < this.map.width; x += 1) {
@@ -1346,61 +1763,79 @@ export class ThreeIsoGame {
           const chunkX = Math.floor(x / TERRAIN_CHUNK_SIZE);
           const chunkY = Math.floor(y / TERRAIN_CHUNK_SIZE);
           const chunkKey = `${chunkX}:${chunkY}`;
-          const blocks = chunkBlockMap.get(chunkKey);
+          const chunk = chunkBlockMap.get(chunkKey);
           const level = z + 1;
-          const sideRotations: number[] = [];
+          const sideDirections: TerrainSideDirection[] = [];
 
           if (getHeight(this.map, x + 1, y) < level) {
-            sideRotations.push(Math.PI / 2);
+            sideDirections.push('east');
           }
           if (getHeight(this.map, x - 1, y) < level) {
-            sideRotations.push(-Math.PI / 2);
+            sideDirections.push('west');
           }
           if (getHeight(this.map, x, y + 1) < level) {
-            sideRotations.push(0);
+            sideDirections.push('south');
           }
           if (getHeight(this.map, x, y - 1) < level) {
-            sideRotations.push(Math.PI);
+            sideDirections.push('north');
           }
 
-          const blockData = {
+          const blockData: TerrainBlockBuildData = {
             x,
             y,
             z,
             material: getBlockMaterial(this.map, x, y, z),
             hasTop: getHeight(this.map, x, y) === level,
-            sideRotations
+            sideDirections
           };
 
-          if (blocks) {
-            blocks.push(blockData);
+          if (chunk) {
+            chunk.blocks.push(blockData);
           } else {
-            chunkBlockMap.set(chunkKey, [blockData]);
+            chunkBlockMap.set(chunkKey, {
+              chunkX,
+              chunkY,
+              blocks: [blockData]
+            });
           }
         }
       }
     }
 
-    for (const chunkBlocks of chunkBlockMap.values()) {
+    for (const chunkData of chunkBlockMap.values()) {
+      const chunkBlocks = chunkData.blocks;
       const topFaceCount = chunkBlocks.reduce((sum, block) => sum + (block.hasTop ? 1 : 0), 0);
-      const sideFaceCount = chunkBlocks.reduce((sum, block) => sum + block.sideRotations.length, 0);
+      const sideFaceCount = chunkBlocks.reduce((sum, block) => sum + block.sideDirections.length, 0);
+      const chunkStartX = chunkData.chunkX * TERRAIN_CHUNK_SIZE;
+      const chunkStartY = chunkData.chunkY * TERRAIN_CHUNK_SIZE;
+      const chunkWidth = Math.min(TERRAIN_CHUNK_SIZE, this.map.width - chunkStartX);
+      const chunkHeight = Math.min(TERRAIN_CHUNK_SIZE, this.map.height - chunkStartY);
+      const opaqueTop = this.buildChunkOpaqueTopMesh(
+        chunkBlocks,
+        chunkStartX,
+        chunkStartY,
+        chunkWidth,
+        chunkHeight
+      );
+      const opaqueSideMesh = this.buildChunkOpaqueSideMesh(
+        chunkBlocks,
+        chunkStartX,
+        chunkStartY,
+        chunkWidth,
+        chunkHeight
+      );
       const chunk: TerrainChunkRender = {
-        opaqueTopMesh:
-          topFaceCount > 0
-            ? this.createTerrainRenderMesh(this.terrainTopGeometry, this.terrainOpaqueMaterial, topFaceCount, 0)
-            : null,
+        opaqueTopMesh: opaqueTop.mesh,
         frontTopMesh:
           topFaceCount > 0
             ? this.createTerrainRenderMesh(this.terrainTopGeometry, this.terrainFrontMaterial, topFaceCount, 20)
             : null,
-        opaqueSideMesh:
-          sideFaceCount > 0
-            ? this.createTerrainRenderMesh(this.terrainSideGeometry, this.terrainOpaqueMaterial, sideFaceCount, 0)
-            : null,
+        opaqueSideMesh,
         frontSideMesh:
           sideFaceCount > 0
             ? this.createTerrainRenderMesh(this.terrainSideGeometry, this.terrainFrontMaterial, sideFaceCount, 20)
-            : null
+            : null,
+        opaqueTopColorSpans: opaqueTop.colorSpans
       };
       chunk.opaqueTopMesh && this.terrainGroup.add(chunk.opaqueTopMesh);
       chunk.frontTopMesh && this.terrainGroup.add(chunk.frontTopMesh);
@@ -1412,11 +1847,10 @@ export class ThreeIsoGame {
 
       chunkBlocks.forEach((blockData) => {
         const topFace =
-          blockData.hasTop && chunk.opaqueTopMesh && chunk.frontTopMesh
+          blockData.hasTop && chunk.frontTopMesh
             ? {
                 type: 'top' as const,
                 rotationY: 0,
-                opaqueIndex: nextTopFaceIndex,
                 frontIndex: nextTopFaceIndex
               }
             : null;
@@ -1425,11 +1859,10 @@ export class ThreeIsoGame {
           nextTopFaceIndex += 1;
         }
 
-        const sideFaces = blockData.sideRotations.map((rotationY) => {
+        const sideFaces = blockData.sideDirections.map((direction) => {
           const face: TerrainFaceBinding = {
             type: 'side',
-            rotationY,
-            opaqueIndex: nextSideFaceIndex,
+            rotationY: getTerrainSideRotation(direction),
             frontIndex: nextSideFaceIndex
           };
           chunk.frontSideMesh?.setMatrixAt(face.frontIndex, this.hiddenTerrainMatrix);
@@ -1450,35 +1883,17 @@ export class ThreeIsoGame {
           currentFront: false
         };
 
-        if (block.topFace && chunk.opaqueTopMesh) {
-          this.writeTerrainFaceTransform(chunk.opaqueTopMesh, block.topFace.opaqueIndex, block, block.topFace);
-        }
-
-        for (const face of block.sideFaces) {
-          if (chunk.opaqueSideMesh) {
-            this.writeTerrainFaceTransform(chunk.opaqueSideMesh, face.opaqueIndex, block, face);
-            const sideColor = this.getTopBaseColor(block.material).multiplyScalar(
-              Math.abs(Math.sin(face.rotationY)) > 0.5 ? 0.7 : 0.58
-            );
-            chunk.opaqueSideMesh.setColorAt(face.opaqueIndex, sideColor);
-            chunk.frontSideMesh?.setColorAt(face.frontIndex, sideColor);
-          }
-        }
+        block.sideFaces.forEach((face, faceIndex) => {
+          const direction = blockData.sideDirections[faceIndex];
+          const sideColor = this.getTerrainSideColor(block.material, direction);
+          chunk.frontSideMesh?.setColorAt(face.frontIndex, sideColor);
+        });
 
         this.terrainBlocks.push(block);
       });
 
-      if (chunk.opaqueTopMesh) {
-        chunk.opaqueTopMesh.instanceMatrix.needsUpdate = true;
-      }
       if (chunk.frontTopMesh) {
         chunk.frontTopMesh.instanceMatrix.needsUpdate = true;
-      }
-      if (chunk.opaqueSideMesh) {
-        chunk.opaqueSideMesh.instanceMatrix.needsUpdate = true;
-        if (chunk.opaqueSideMesh.instanceColor) {
-          chunk.opaqueSideMesh.instanceColor.needsUpdate = true;
-        }
       }
       if (chunk.frontSideMesh) {
         chunk.frontSideMesh.instanceMatrix.needsUpdate = true;
@@ -1493,34 +1908,29 @@ export class ThreeIsoGame {
   }
 
   private refreshTerrainTransforms(): void {
+    this.applyTerrainScale();
+
     for (const block of this.terrainBlocks) {
       const allFaces = block.topFace ? [block.topFace, ...block.sideFaces] : block.sideFaces;
 
       for (const face of allFaces) {
-        const visibleMesh = this.getTerrainFaceMesh(block.chunk, face, block.currentFront);
-        const hiddenMesh = this.getTerrainFaceMesh(block.chunk, face, !block.currentFront);
+        const frontMesh = this.getFrontTerrainFaceMesh(block.chunk, face);
 
-        if (visibleMesh) {
-          this.writeTerrainFaceTransform(
-            visibleMesh,
-            block.currentFront ? face.frontIndex : face.opaqueIndex,
-            block,
-            face
-          );
+        if (!frontMesh) {
+          continue;
         }
-        hiddenMesh?.setMatrixAt(block.currentFront ? face.opaqueIndex : face.frontIndex, this.hiddenTerrainMatrix);
+
+        if (block.currentFront) {
+          this.writeTerrainFaceTransform(frontMesh, face.frontIndex, block, face);
+        } else {
+          frontMesh.setMatrixAt(face.frontIndex, this.hiddenTerrainMatrix);
+        }
       }
     }
 
     for (const chunk of this.terrainChunks) {
-      if (chunk.opaqueTopMesh) {
-        chunk.opaqueTopMesh.instanceMatrix.needsUpdate = true;
-      }
       if (chunk.frontTopMesh) {
         chunk.frontTopMesh.instanceMatrix.needsUpdate = true;
-      }
-      if (chunk.opaqueSideMesh) {
-        chunk.opaqueSideMesh.instanceMatrix.needsUpdate = true;
       }
       if (chunk.frontSideMesh) {
         chunk.frontSideMesh.instanceMatrix.needsUpdate = true;
@@ -1528,12 +1938,15 @@ export class ThreeIsoGame {
     }
   }
 
-  private updateTerrainOcclusion(): void {
-    const basis = this.getPlaneBasis();
-    const actorFootX = this.player.x;
-    const actorFootY = this.player.y;
-    const actorFootZ = this.player.z;
-    const actorTopZ = this.player.z + PLAYER_BODY_HEIGHT;
+  private shouldTerrainBlockRenderInFrontOfActor(
+    block: TerrainBlockInstance,
+    actorFootX: number,
+    actorFootY: number,
+    actorFootZ: number,
+    actorBodyHeight: number,
+    basis: ScreenBasis
+  ): boolean {
+    const actorTopZ = actorFootZ + actorBodyHeight;
     const {
       lateralRange,
       frontMin,
@@ -1541,53 +1954,67 @@ export class ThreeIsoGame {
       minHeightAboveFeet,
       actorHeightPadding
     } = this.occlusionTuning;
+    const centerDeltaX = block.x + 0.5 - actorFootX;
+    const centerDeltaY = block.y + 0.5 - actorFootY;
+    const centerLateral = centerDeltaX * basis.rightNorm.x + centerDeltaY * basis.rightNorm.y;
+    const centerFrontness = -(centerDeltaX * basis.topNorm.x + centerDeltaY * basis.topNorm.y);
+
+    if (
+      centerLateral < -lateralRange - 2.5 ||
+      centerLateral > lateralRange + 2.5 ||
+      centerFrontness < frontMin - 2.5 ||
+      centerFrontness > frontMax + 3.5
+    ) {
+      return false;
+    }
+
+    const footprintPoints = [
+      { x: block.x, y: block.y },
+      { x: block.x + 1, y: block.y },
+      { x: block.x, y: block.y + 1 },
+      { x: block.x + 1, y: block.y + 1 }
+    ];
+    let minLateral = Infinity;
+    let maxLateral = -Infinity;
+    let minFrontness = Infinity;
+    let maxFrontness = -Infinity;
+
+    for (const point of footprintPoints) {
+      const deltaX = point.x - actorFootX;
+      const deltaY = point.y - actorFootY;
+      const lateral = deltaX * basis.rightNorm.x + deltaY * basis.rightNorm.y;
+      const frontness = -(deltaX * basis.topNorm.x + deltaY * basis.topNorm.y);
+      minLateral = Math.min(minLateral, lateral);
+      maxLateral = Math.max(maxLateral, lateral);
+      minFrontness = Math.min(minFrontness, frontness);
+      maxFrontness = Math.max(maxFrontness, frontness);
+    }
+
+    const blockTop = block.z + 1;
+    const blockBottom = block.z;
+    const overlapsActorLane = maxLateral >= -lateralRange && minLateral <= lateralRange;
+    const isFrontFacing = maxFrontness >= frontMin && minFrontness <= frontMax;
+    const risesAboveFeet = blockTop > actorFootZ + minHeightAboveFeet + OCCLUSION_HEIGHT_EPSILON;
+    const intersectsActorHeight = blockBottom < actorTopZ + actorHeightPadding;
+
+    return overlapsActorLane && isFrontFacing && risesAboveFeet && intersectsActorHeight;
+  }
+
+  private updateTerrainOcclusion(): void {
+    const basis = this.getPlaneBasis();
+    const actorFootX = this.player.x;
+    const actorFootY = this.player.y;
+    const actorFootZ = this.player.z;
 
     for (const block of this.terrainBlocks) {
-      const centerDeltaX = block.x + 0.5 - actorFootX;
-      const centerDeltaY = block.y + 0.5 - actorFootY;
-      const centerLateral = centerDeltaX * basis.rightNorm.x + centerDeltaY * basis.rightNorm.y;
-      const centerFrontness = -(centerDeltaX * basis.topNorm.x + centerDeltaY * basis.topNorm.y);
-
-      if (
-        centerLateral < -lateralRange - 2.5 ||
-        centerLateral > lateralRange + 2.5 ||
-        centerFrontness < frontMin - 2.5 ||
-        centerFrontness > frontMax + 3.5
-      ) {
-        this.setTerrainBlockFrontState(block, false);
-        continue;
-      }
-
-      const footprintPoints = [
-        { x: block.x, y: block.y },
-        { x: block.x + 1, y: block.y },
-        { x: block.x, y: block.y + 1 },
-        { x: block.x + 1, y: block.y + 1 }
-      ];
-      let minLateral = Infinity;
-      let maxLateral = -Infinity;
-      let minFrontness = Infinity;
-      let maxFrontness = -Infinity;
-
-      for (const point of footprintPoints) {
-        const deltaX = point.x - actorFootX;
-        const deltaY = point.y - actorFootY;
-        const lateral = deltaX * basis.rightNorm.x + deltaY * basis.rightNorm.y;
-        const frontness = -(deltaX * basis.topNorm.x + deltaY * basis.topNorm.y);
-        minLateral = Math.min(minLateral, lateral);
-        maxLateral = Math.max(maxLateral, lateral);
-        minFrontness = Math.min(minFrontness, frontness);
-        maxFrontness = Math.max(maxFrontness, frontness);
-      }
-
-      const blockTop = (block.z + 1) * this.blockHeightScale;
-      const blockBottom = block.z * this.blockHeightScale;
-      const overlapsActorLane = maxLateral >= -lateralRange && minLateral <= lateralRange;
-      const isFrontFacing = maxFrontness >= frontMin && minFrontness <= frontMax;
-      const risesAboveFeet = blockTop > actorFootZ + minHeightAboveFeet;
-      const intersectsActorHeight = blockBottom < actorTopZ + actorHeightPadding;
-      const shouldRenderInFront =
-        overlapsActorLane && isFrontFacing && risesAboveFeet && intersectsActorHeight;
+      const shouldRenderInFront = this.shouldTerrainBlockRenderInFrontOfActor(
+        block,
+        actorFootX,
+        actorFootY,
+        actorFootZ / this.blockHeightScale,
+        PLAYER_BODY_HEIGHT / this.blockHeightScale,
+        basis
+      );
       this.setTerrainBlockFrontState(block, shouldRenderInFront);
     }
   }
@@ -2120,7 +2547,7 @@ export class ThreeIsoGame {
     const shadowScale = 1 + Math.min(airHeight * 0.12, 0.35);
 
     this.playerSprite.position.set(this.player.x, this.player.z, this.player.y);
-    this.playerSprite.renderOrder = 10;
+    this.playerSprite.renderOrder = 30;
 
     this.shadowMesh.position.set(this.player.x, groundHeight + 0.01, this.player.y);
     this.shadowMesh.scale.setScalar(shadowScale);
@@ -2147,7 +2574,7 @@ export class ThreeIsoGame {
       npc.spriteMaterial.needsUpdate = true;
 
       npc.sprite.position.set(npc.x, npc.z, npc.y);
-      npc.sprite.renderOrder = 10;
+      npc.sprite.renderOrder = 30;
       npc.shadow.position.set(npc.x, npc.z + 0.01, npc.y);
       npc.shadow.scale.setScalar(1);
       npc.shadow.renderOrder = 1;

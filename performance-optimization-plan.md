@@ -55,25 +55,23 @@ Replace the current one-mesh-per-exposed-cube terrain with chunked terrain meshe
 
 ### Status
 
-Mostly complete as of 2026-04-04.
+Complete as of 2026-04-04 for the current terrain-rendering scope.
 
 Completed in this phase so far:
 
 - terrain now renders through chunked `InstancedMesh` batches instead of one `Mesh` per exposed cube
 - terrain now renders exposed top and side faces only instead of full cube instances
 - chunked terrain keeps separate normal/front render paths so the current player-centric occlusion model still works
-
-Still pending in this phase:
-
-- greedy merging of coplanar faces
+- opaque terrain now greedy-merges coplanar top surfaces and wall faces into static chunk `BufferGeometry`
 
 ### Implementation Notes
 
-- The current chunked implementation is still an intermediate step, not the final terrain format.
-- It now removes bottom faces and hidden interior faces at the geometry level, which is a substantial reduction from the first chunked-cube pass.
-- To preserve the current occlusion behavior without a full occlusion rewrite, each chunk currently keeps both opaque and front-terrain instance sets and toggles blocks between them.
-- The current face-only path still operates at per-face instance granularity. Greedy meshing is the next step if we want to reduce instance count and vertex count further.
-- This is a good bridge architecture for the next step, but not the final optimized terrain representation.
+- The current terrain renderer is now intentionally split in two.
+- Opaque terrain is static greedy-merged chunk geometry.
+- Front terrain remains a dynamic per-face overlay so the current player-centric occlusion behavior still works without a Phase 2 rewrite.
+- This means we now get most of the rendering win from greedy meshing while keeping the existing occlusion model stable.
+- Height tint on opaque top surfaces is now stored in chunk vertex colors rather than per-block material instances.
+- The remaining large terrain-side cost is no longer raw terrain draw setup. It is the occlusion system still scanning per-block front-overlay candidates.
 
 ### Why this is first
 
@@ -131,7 +129,7 @@ Expected gain:
 
 #### Step 1C: Greedy mesh coplanar faces
 
-Status: pending
+Status: done on 2026-04-04
 
 Once chunked face generation works:
 
@@ -143,9 +141,19 @@ Expected gain:
 - major additional drop in triangle count and draw overhead
 - best long-term terrain representation for this style of world
 
+Implementation note:
+
+- In the current version, greedy merging is applied to the opaque terrain path.
+- The front-terrain overlay is still per-face and per-block on purpose, because it is coupled to the current occlusion model and will be revisited in Phase 2.
+
 ### Notes
 
-If greedy meshing feels too large for one pass, we should still do chunked merged faces first. That already gets most of the structural win.
+Phase 1 is now in a good stopping place.
+
+The next meaningful terrain-performance work is Phase 2:
+
+- make occlusion spatial instead of global
+- add dirty-update rules so we do not reclassify terrain every frame
 
 ## Phase 2: Local Terrain Occlusion
 
