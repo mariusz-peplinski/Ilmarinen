@@ -2,86 +2,80 @@
 
 ## Project Structure & Module Organization
 
-This repository is an Electron + Vite + TypeScript desktop game prototype using PixiJS.
+This repo is an Electron + Vite + TypeScript desktop game prototype. The active renderer is now **Three.js**, not PixiJS, though the older Pixi path is still kept in the repo as reference.
 
-- `src/main/`: Electron main-process entry (`index.ts`).
-- `src/preload/`: Electron preload bridge.
-- `src/renderer/`: renderer HTML shell.
-- `src/renderer/src/`: game code and UI styles.
-  - `game.ts`: core gameplay, terrain rendering, camera, input, and movement.
-  - `main.ts`: renderer bootstrap and asset loading.
-  - `style.css`: HUD and overlay styling.
-- Root-level art assets such as `characters.png` and `new-tileset.png` are loaded directly by the renderer.
+- `src/main/`: Electron main-process entry.
+- `src/preload/`: preload bridge.
+- `src/renderer/src/main.ts`: renderer bootstrap, HUD/compass setup, asset loading.
+- `src/renderer/src/three-game.ts`: active game/runtime implementation.
+- `src/renderer/src/game.ts`: older Pixi-based prototype/reference path.
+- `src/renderer/src/style.css`: HUD/overlay styling.
+- Root assets: `characters.png`, `new-tileset.png`.
+
+## Current Runtime Notes
+
+- Terrain is rendered as real 3D cubes in Three.js.
+- Terrain is generated on startup from layered noise over a `168x144` map, with terraced heights currently in the `1..6` range.
+- Tile columns can now mix materials per vertical layer; do not assume one material per stack.
+- Actors are billboard sprites from `characters.png`.
+- Collision is **not** full 3D physics; gameplay still uses logical tile/height checks.
+- The player now uses a small fake-capsule plan-view collision radius (`PLAYER_COLLISION_RADIUS`) instead of a pure point.
+- Actor-vs-terrain occlusion uses a **local multi-pass** rule for nearby cubes, not a global sorter.
+- There are two NPC groups in the current prototype: a few slow wandering NPCs and a larger stationary set. Both are only active/visible inside an alive radius around the player.
+- A temporary free camera is enabled: `` ` `` toggles it, left mouse drag rotates/orbits the camera, and `Tab` / `Shift+Tab` still snap back to quarter-turn views.
+- The renderer HUD now includes a compass, FPS counter, and lighting/shadow debug controls.
+- Current perf caveat: terrain is still built as one mesh per exposed cube layer, so shadows and map density are the first things to scrutinize when performance drops.
 
 ## Asset Notes
 
-`new-tileset.png` is the active terrain atlas.
+`new-tileset.png` atlas facts:
 
-- Atlas cells are `32x32`.
-- Columns are separated by a `2px` gutter.
-- Rows have no gutter.
-- Each tile graphic is bottom-aligned within its `32x32` cell.
-- The visible tile art is effectively `32x24`:
-  - `8px` bottom wall/thickness
-  - `16px` diamond top surface
-- The empty top area in the cell is intentional and may later hold non-colliding decoration.
+- cells are `32x32`
+- columns have a `2px` gutter
+- rows have no gutter
+- art is bottom-aligned
+- visible tile art is effectively `32x24`
+- bottom `8px` is wall/thickness
+- next `16px` is the top diamond surface
 
-Keep this geometry in mind when changing projection, anchors, sorting, or atlas slicing.
+These are source-art facts. Do **not** treat the atlas as ordinary flat top/side textures without checking the projection assumptions first.
 
 ## Build, Test, and Development Commands
 
-- `npm run dev`: start the Electron app in development mode with hot reload.
-- `npm run typecheck`: run TypeScript checks without emitting files.
-- `npm run build`: produce production renderer/main/preload bundles in `out/`.
-- `npm run dist`: build and package the Linux desktop app with `electron-builder`.
+- `npm run dev`: start the Electron app in development mode.
+- `npm run typecheck`: run TypeScript checks.
+- `npm run build`: build renderer/main/preload bundles.
+- `npm run dist`: package the app.
 
-Use `npm run typecheck && npm run build` before committing gameplay or rendering changes.
+Before committing rendering/gameplay work, run:
+
+- `npm run typecheck`
+- `npm run build`
 
 ## Coding Style & Naming Conventions
 
-- Use TypeScript with 2-space indentation and semicolons omitted, matching the existing codebase.
-- Prefer small helper functions for math/projection logic (`clamp`, `approach`, `projectWorld`).
-- Use `camelCase` for variables/functions, `PascalCase` for classes/interfaces, and `UPPER_SNAKE_CASE` for gameplay constants.
-- Keep renderer behavior in `game.ts`; keep Electron bootstrapping in `src/main` and `src/preload`.
-- Preserve pixel-art friendliness: nearest-neighbor textures, explicit sizes, and minimal hidden magic numbers.
+- TypeScript, 2-space indentation, semicolon-free style.
+- `camelCase` for variables/functions, `PascalCase` for classes/interfaces, `UPPER_SNAKE_CASE` for gameplay constants.
+- Keep gameplay/math helpers small and explicit.
+- Prefer changing `three-game.ts` for active gameplay/rendering work unless intentionally touching the old Pixi path.
+- Prefer deterministic startup generation and debug-friendly constants over hard-coded one-off map edits unless the change is explicitly about authored content.
 
 ## Direction Convention
 
-Screen-direction language is intentional and has been sanity-checked against in-code movement.
+Screen-direction language has been sanity-checked:
 
-- The HUD/compass uses `N-up`, `E-up`, `S-up`, `W-up` to describe which world direction is currently at the top of the screen.
-- In the default `N-up` view:
+- default `N-up` view:
   - `+X = SE`
   - `-X = NW`
   - `+Y = SW`
   - `-Y = NE`
-  - `N = (-1, -1)`
-  - `S = (+1, +1)`
-- `Tab` rotates the view `+90` degrees and `Shift+Tab` rotates `-90` degrees.
+- `Tab` rotates `+90`
+- `Shift+Tab` rotates `-90`
 
-When discussing visual bugs, prefer the on-screen compass terms first, then include world-axis equivalents if useful.
+## Commit Guidance
 
-## Testing Guidelines
+Use short, imperative, outcome-focused commit messages, for example:
 
-There is no automated gameplay test suite yet. For now:
-
-- Run `npm run typecheck`.
-- Run `npm run build`.
-- Manually verify movement, jumping, camera follow, and terrain rendering in `npm run dev`.
-
-When adding tests later, place them near the relevant module or in a dedicated `tests/` folder and prefer behavior-focused names such as `movement.spec.ts`.
-
-## Commit & Pull Request Guidelines
-
-Recent commits use short, imperative summaries, for example:
-
-- `Initial isometric prototype`
-- `Checkpoint terrain reset and movement tuning`
-- `Tune movement feel and pixel snapping`
-
-Follow that style: brief, readable, and outcome-focused. For pull requests, include:
-
-- a short summary of gameplay/rendering changes
-- verification steps run (`typecheck`, `build`, manual checks)
-- screenshots or clips for visual changes
-- notes about any known regression or unfinished sorting/rendering work
+- `Add first working Three.js cube prototype`
+- `Refine 3D occlusion and temporary orbit camera`
+- `Add startup terrain generation and NPC activity culling`

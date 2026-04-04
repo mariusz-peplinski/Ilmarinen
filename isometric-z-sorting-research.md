@@ -2,6 +2,18 @@
 
 Date: 2026-03-27
 
+## Status Note
+
+This document is still useful background, but it describes the sorting problem from the older isometric sprite-sorting perspective.
+
+The current active runtime in this repo uses Three.js with real 3D terrain cubes and billboard actors, so we are no longer relying on a pure PixiJS-style global sprite sorting solution. The main remaining relevance of this note is:
+
+- actor-vs-actor ordering ideas
+- local occlusion reasoning around billboards and tall scenery
+- future cases involving larger props, overhangs, bridges, or more complex multi-actor overlap
+
+In other words: treat this file as historical research and design context, not as a description of the current renderer architecture.
+
 This note summarizes research into how isometric tile-based games tend to handle draw order for terrain, player characters, NPCs, and larger props. The original goal was to understand practical approaches used in games similar in feel to tactics-style isometric games such as *Final Fantasy Tactics Advance*, especially around multiple actors sharing the same map and occasionally overlapping tall or multi-tile scenery.
 
 ## Short version

@@ -2,6 +2,30 @@
 
 Date: 2026-03-27
 
+## Status Update
+
+Status updated: 2026-04-04
+
+The Three.js path is now the active runtime, not just a parallel experiment.
+
+Implemented since this plan was written:
+
+- orthographic camera with quarter-turn view rotation
+- real 3D cube terrain with billboard actor sprites
+- player movement, jumping, logical height collision, and shadow
+- local actor-vs-terrain occlusion for nearby cubes
+- startup-generated terrain using layered noise and terraced heights
+- per-layer material stacks in terrain columns
+- debug free camera, HUD, compass, lighting controls, and FPS counter
+- simple NPC population with alive-radius culling
+
+What still looks like active follow-up work:
+
+- optimize terrain rendering away from one-mesh-per-exposed-cube
+- generalize occlusion beyond the player-centric pass
+- expand actor/NPC behavior beyond the current prototype wandering/standing states
+- decide how and when the atlas art should replace the current shaded-material cube presentation
+
 ## Decision
 
 We will pivot the renderer from PixiJS-only isometric sorting to a real 3D scene built with **Three.js**.
@@ -65,7 +89,7 @@ Goal: prove the camera model and sprite billboarding.
 
 ## Phase 2: Terrain
 
-Current status: in progress
+Current status: partially complete, but not yet optimized
 
 - Convert map cells into 3D terrain meshes.
 - Start simple:
@@ -97,6 +121,7 @@ Goal: preserve the cube workflow while fixing the most visible billboard/cube cl
 - Keep gameplay on the same logical grid scale as today.
 - Use billboard sprites for actor visuals.
 - Restore walk-cycle animation and shadow.
+- Add multiple NPC actors sharing the same sprite-sheet pipeline.
 
 Goal: match current feel, but with depth handled by the 3D scene.
 
@@ -115,6 +140,7 @@ Goal: parity with current movement behavior.
 
 - Recreate HUD status info.
 - Add camera/view debug info.
+- Add renderer/performance debugging such as FPS and shadow tuning.
 - Add optional helpers for:
   - tile bounds
   - actor feet position
@@ -133,9 +159,9 @@ Do **not** mutate the current Pixi renderer into a hybrid.
 
 Instead:
 
-1. Build the Three.js path in parallel.
-2. Get one flat map + one actor working.
-3. Port movement/collision.
-4. Remove the old Pixi terrain renderer only after parity is good enough.
+1. Keep the Three.js path as the active runtime.
+2. Use the old Pixi path only as a reference while missing systems are ported or retired.
+3. Prioritize optimization and actor-system maturation before deeper art integration.
+4. Remove the old Pixi terrain renderer only after the remaining gameplay/debug reference value is gone.
 
 This keeps risk lower and gives us a working reference while rewriting.
