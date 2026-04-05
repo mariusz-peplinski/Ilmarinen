@@ -1,5 +1,6 @@
 import {
   AmbientLight,
+  BoxGeometry,
   CanvasTexture,
   Color,
   BufferGeometry,
@@ -81,6 +82,7 @@ interface NpcState {
   baseTint: Color;
   spriteMaterial: SpriteMaterial;
   sprite: Sprite;
+  depthProxy: Mesh;
   shadow: Mesh;
 }
 
@@ -166,6 +168,13 @@ interface LightingDebugState {
   heightTintStrength: number;
 }
 
+interface ActorOcclusionDebugState {
+  proxyWidthFactor: number;
+  proxyHeightFactor: number;
+  spriteCameraBias: number;
+  proxyCameraBias: number;
+}
+
 const MAX_RUN_SPEED = 5.4;
 const GROUND_ACCEL = 18;
 const GROUND_TURN_ACCEL = 34;
@@ -230,6 +239,19 @@ const NPC_MOVE_MAX_TIME = 3.4;
 const NPC_WALK_SPEED_MIN = 0.38;
 const NPC_WALK_SPEED_MAX = 0.72;
 const TERRAIN_CHUNK_SIZE = 16;
+const ACTOR_DEPTH_PROXY_RENDER_ORDER = -10;
+const ACTOR_SHADOW_RENDER_ORDER = 10;
+const ACTOR_SPRITE_RENDER_ORDER = 11;
+const DEFAULT_ACTOR_SPRITE_CAMERA_BIAS = 0.01;
+const DEFAULT_ACTOR_DEPTH_PROXY_CAMERA_BIAS = 0.01;
+const ACTOR_SPRITE_WORLD_WIDTH = CHARACTER_SCALE * (CHARACTER_FRAME_WIDTH / CHARACTER_FRAME_HEIGHT);
+const DEFAULT_ACTOR_DEPTH_PROXY_WIDTH_FACTOR = 0.72;
+const DEFAULT_ACTOR_DEPTH_PROXY_HEIGHT_FACTOR = 0.92;
+const PLAYER_DEPTH_PROXY_WIDTH = ACTOR_SPRITE_WORLD_WIDTH * DEFAULT_ACTOR_DEPTH_PROXY_WIDTH_FACTOR;
+const PLAYER_DEPTH_PROXY_HEIGHT = PLAYER_BODY_HEIGHT * DEFAULT_ACTOR_DEPTH_PROXY_HEIGHT_FACTOR;
+const NPC_BODY_HEIGHT = 1.1;
+const NPC_DEPTH_PROXY_WIDTH = ACTOR_SPRITE_WORLD_WIDTH * DEFAULT_ACTOR_DEPTH_PROXY_WIDTH_FACTOR;
+const NPC_DEPTH_PROXY_HEIGHT = NPC_BODY_HEIGHT * DEFAULT_ACTOR_DEPTH_PROXY_HEIGHT_FACTOR;
 const HIDDEN_TERRAIN_INSTANCE_Y = -10000;
 const HIDDEN_TERRAIN_INSTANCE_SCALE = 0.0001;
 const DEFAULT_OCCLUSION_TUNING: OcclusionTuning = {
@@ -703,6 +725,7 @@ export class ThreeIsoGame {
     CAMERA_FAR
   );
   private readonly terrainGroup = new Group();
+  private readonly actorDepthGroup = new Group();
   private readonly actorGroup = new Group();
   private readonly input = new InputController();
   private readonly map = createExampleMap();
@@ -711,18 +734,37 @@ export class ThreeIsoGame {
   private readonly frameTextures: CanvasTexture[][];
   private readonly spriteMaterial: SpriteMaterial;
   private readonly playerSprite: Sprite;
+  private readonly playerDepthProxy: Mesh;
   private readonly shadowMesh: Mesh;
   private readonly npcs: NpcState[] = [];
   private readonly terrainTopGeometry = createTerrainTopGeometry();
   private readonly terrainSideGeometry = createTerrainSideGeometry();
   private readonly shadowGeometry = new CircleGeometry(0.26, 24);
+  private readonly playerDepthProxyGeometry = new BoxGeometry(
+    PLAYER_DEPTH_PROXY_WIDTH,
+    PLAYER_DEPTH_PROXY_HEIGHT,
+    PLAYER_DEPTH_PROXY_WIDTH
+  );
+  private readonly npcDepthProxyGeometry = new BoxGeometry(
+    NPC_DEPTH_PROXY_WIDTH,
+    NPC_DEPTH_PROXY_HEIGHT,
+    NPC_DEPTH_PROXY_WIDTH
+  );
   private readonly actorShadowMaterial = new MeshBasicMaterial({
     color: 0x000000,
     transparent: true,
     opacity: 0.24,
     depthWrite: false,
+    depthTest: true,
     side: DoubleSide
   });
+  private readonly actorDepthProxyMaterial = (() => {
+    const material = new MeshBasicMaterial();
+    material.colorWrite = false;
+    material.depthWrite = true;
+    material.depthTest = true;
+    return material;
+  })();
   private readonly terrainOpaqueMaterial = new MeshLambertMaterial({
     color: 0xffffff,
     vertexColors: true
@@ -743,6 +785,7 @@ export class ThreeIsoGame {
   private readonly reusableTerrainScale = new Vector3();
   private readonly reusableTerrainQuaternion = new Quaternion();
   private readonly reusableTerrainAxisY = new Vector3(0, 1, 0);
+  private readonly reusableCameraDirection = new Vector3();
   private readonly cameraFocus = new Vector3();
   private readonly cameraDesiredFocus = new Vector3();
   private readonly screenVelocity = new Vector2();
@@ -751,6 +794,10 @@ export class ThreeIsoGame {
   private readonly sunLight = new DirectionalLight(0xfff1d6, DEFAULT_SUN_INTENSITY);
   private shadowQuality = DEFAULT_SHADOW_QUALITY;
   private heightTintStrength = DEFAULT_HEIGHT_TINT_STRENGTH;
+  private actorDepthProxyWidthFactor = DEFAULT_ACTOR_DEPTH_PROXY_WIDTH_FACTOR;
+  private actorDepthProxyHeightFactor = DEFAULT_ACTOR_DEPTH_PROXY_HEIGHT_FACTOR;
+  private actorSpriteCameraBias = DEFAULT_ACTOR_SPRITE_CAMERA_BIAS;
+  private actorDepthProxyCameraBias = DEFAULT_ACTOR_DEPTH_PROXY_CAMERA_BIAS;
   private sunAzimuth = DEFAULT_SUN_AZIMUTH;
   private sunElevation = DEFAULT_SUN_ELEVATION;
   private dragState: DragState | null = null;
@@ -804,6 +851,7 @@ export class ThreeIsoGame {
 
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x000000, 0);
+    this.renderer.autoClear = false;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = BasicShadowMap;
     this.root.prepend(this.renderer.domElement);
@@ -825,6 +873,7 @@ export class ThreeIsoGame {
     this.scene.add(this.sunLight.target);
 
     this.scene.add(this.terrainGroup);
+    this.scene.add(this.actorDepthGroup);
     this.applyTerrainScale();
     this.scene.add(this.actorGroup);
 
@@ -832,11 +881,14 @@ export class ThreeIsoGame {
 
     this.spriteMaterial = this.createActorSpriteMaterial(this.frameTextures[this.currentDirection][1]);
     this.playerSprite = this.createActorSprite(this.spriteMaterial);
+    this.playerDepthProxy = this.createActorDepthProxy(this.playerDepthProxyGeometry);
+    this.actorDepthGroup.add(this.playerDepthProxy);
     this.actorGroup.add(this.playerSprite);
 
     this.shadowMesh = this.createActorShadow();
     this.actorGroup.add(this.shadowMesh);
     this.spawnNpcs();
+    this.refreshActorDepthProxyScales();
 
     this.updateCompass();
     this.refreshLighting();
@@ -960,6 +1012,33 @@ export class ThreeIsoGame {
     };
   }
 
+  public setDebugActorDepthProxyWidthFactor(value: number): void {
+    this.actorDepthProxyWidthFactor = clamp(value, 0.3, 1.4);
+    this.refreshActorDepthProxyScales();
+  }
+
+  public setDebugActorDepthProxyHeightFactor(value: number): void {
+    this.actorDepthProxyHeightFactor = clamp(value, 0.3, 1.4);
+    this.refreshActorDepthProxyScales();
+  }
+
+  public setDebugActorSpriteCameraBias(value: number): void {
+    this.actorSpriteCameraBias = clamp(value, 0, 0.1);
+  }
+
+  public setDebugActorDepthProxyCameraBias(value: number): void {
+    this.actorDepthProxyCameraBias = clamp(value, 0, 0.1);
+  }
+
+  public getDebugActorOcclusion(): ActorOcclusionDebugState {
+    return {
+      proxyWidthFactor: this.actorDepthProxyWidthFactor,
+      proxyHeightFactor: this.actorDepthProxyHeightFactor,
+      spriteCameraBias: this.actorSpriteCameraBias,
+      proxyCameraBias: this.actorDepthProxyCameraBias
+    };
+  }
+
   private readonly handleResize = (): void => {
     const width = this.root.clientWidth || window.innerWidth;
     const height = this.root.clientHeight || window.innerHeight;
@@ -1024,6 +1103,16 @@ export class ThreeIsoGame {
     this.lastFrameTime = now;
 
     this.update(dt);
+    this.renderer.clear();
+
+    this.terrainGroup.visible = false;
+    this.actorGroup.visible = false;
+    this.actorDepthGroup.visible = true;
+    this.renderer.render(this.scene, this.camera);
+
+    this.terrainGroup.visible = true;
+    this.actorGroup.visible = true;
+    this.actorDepthGroup.visible = false;
     this.renderer.render(this.scene, this.camera);
   };
 
@@ -1234,11 +1323,53 @@ export class ThreeIsoGame {
     block.chunk.frontTopMesh?.setColorAt(block.topFace.frontIndex, block.renderColor);
   }
 
+  private setActorSpritePosition(sprite: Sprite, x: number, y: number, z: number): void {
+    sprite.position.set(x, y, z);
+  }
+
+  private createActorDepthProxy(geometry: BoxGeometry): Mesh {
+    const proxy = new Mesh(geometry, this.actorDepthProxyMaterial);
+    proxy.castShadow = false;
+    proxy.receiveShadow = false;
+    proxy.renderOrder = ACTOR_DEPTH_PROXY_RENDER_ORDER;
+    proxy.frustumCulled = false;
+    return proxy;
+  }
+
+  private setActorDepthProxyPosition(proxy: Mesh, x: number, footY: number, z: number, proxyHeight: number): void {
+    proxy.position.set(x, footY + proxyHeight * 0.5, z);
+    this.camera.getWorldDirection(this.reusableCameraDirection);
+    proxy.position.addScaledVector(this.reusableCameraDirection, this.actorDepthProxyCameraBias);
+  }
+
+  private refreshActorDepthProxyScales(): void {
+    const widthScale = this.actorDepthProxyWidthFactor / DEFAULT_ACTOR_DEPTH_PROXY_WIDTH_FACTOR;
+    const heightScale = this.actorDepthProxyHeightFactor / DEFAULT_ACTOR_DEPTH_PROXY_HEIGHT_FACTOR;
+
+    this.playerDepthProxy.scale.set(widthScale, heightScale, widthScale);
+
+    for (const npc of this.npcs) {
+      npc.depthProxy.scale.set(widthScale, heightScale, widthScale);
+    }
+  }
+
+  private getActorProxyDimensions(baseWidth: number, baseHeight: number): {
+    width: number;
+    height: number;
+  } {
+    return {
+      width:
+        baseWidth * (this.actorDepthProxyWidthFactor / DEFAULT_ACTOR_DEPTH_PROXY_WIDTH_FACTOR),
+      height:
+        baseHeight * (this.actorDepthProxyHeightFactor / DEFAULT_ACTOR_DEPTH_PROXY_HEIGHT_FACTOR)
+    };
+  }
+
   private createActorSpriteMaterial(
     frameTexture: CanvasTexture,
     tintHex = '#ffffff',
-    depthTest = true,
-    depthWrite = true
+    depthTest = false,
+    depthWrite = false
   ): SpriteMaterial {
     return new SpriteMaterial({
       map: frameTexture,
@@ -1326,9 +1457,12 @@ export class ThreeIsoGame {
       const frameTexture = this.frameTextures[4][1];
       const spriteMaterial = this.createActorSpriteMaterial(frameTexture, tintHex, true);
       const sprite = this.createActorSprite(spriteMaterial);
+      const depthProxy = this.createActorDepthProxy(this.npcDepthProxyGeometry);
       const shadow = this.createActorShadow();
       sprite.visible = false;
+      depthProxy.visible = false;
       shadow.visible = false;
+      this.actorDepthGroup.add(depthProxy);
       this.actorGroup.add(sprite);
       this.actorGroup.add(shadow);
 
@@ -1355,6 +1489,7 @@ export class ThreeIsoGame {
         baseTint: new Color(tintHex),
         spriteMaterial,
         sprite,
+        depthProxy,
         shadow
       };
     };
@@ -2004,15 +2139,16 @@ export class ThreeIsoGame {
     const basis = this.getPlaneBasis();
     const actorFootX = this.player.x;
     const actorFootY = this.player.y;
-    const actorFootZ = this.player.z;
+    const actorFootZ = this.player.z / this.blockHeightScale;
+    const actorBodyHeight = PLAYER_BODY_HEIGHT / this.blockHeightScale;
 
     for (const block of this.terrainBlocks) {
       const shouldRenderInFront = this.shouldTerrainBlockRenderInFrontOfActor(
         block,
         actorFootX,
         actorFootY,
-        actorFootZ / this.blockHeightScale,
-        PLAYER_BODY_HEIGHT / this.blockHeightScale,
+        actorFootZ,
+        actorBodyHeight,
         basis
       );
       this.setTerrainBlockFrontState(block, shouldRenderInFront);
@@ -2545,19 +2681,41 @@ export class ThreeIsoGame {
     const groundHeight = this.getSupportHeight(this.player.x, this.player.y);
     const airHeight = Math.max(0, this.player.z - groundHeight);
     const shadowScale = 1 + Math.min(airHeight * 0.12, 0.35);
+    const proxyHeight = this.getActorProxyDimensions(
+      PLAYER_DEPTH_PROXY_WIDTH,
+      PLAYER_DEPTH_PROXY_HEIGHT
+    ).height;
 
-    this.playerSprite.position.set(this.player.x, this.player.z, this.player.y);
-    this.playerSprite.renderOrder = 30;
+    this.setActorDepthProxyPosition(
+      this.playerDepthProxy,
+      this.player.x,
+      this.player.z,
+      this.player.y,
+      proxyHeight
+    );
+    this.setActorSpritePosition(
+      this.playerSprite,
+      this.player.x,
+      this.player.z,
+      this.player.y
+    );
+    this.playerSprite.renderOrder = ACTOR_SPRITE_RENDER_ORDER;
 
     this.shadowMesh.position.set(this.player.x, groundHeight + 0.01, this.player.y);
     this.shadowMesh.scale.setScalar(shadowScale);
-    this.shadowMesh.renderOrder = 1;
+    this.shadowMesh.renderOrder = ACTOR_SHADOW_RENDER_ORDER;
 
     this.updateTerrainOcclusion();
   }
 
   private updateNpcVisuals(): void {
+    const proxyHeight = this.getActorProxyDimensions(
+      NPC_DEPTH_PROXY_WIDTH,
+      NPC_DEPTH_PROXY_HEIGHT
+    ).height;
+
     for (const npc of this.npcs) {
+      npc.depthProxy.visible = npc.active;
       npc.sprite.visible = npc.active;
       npc.shadow.visible = npc.active;
 
@@ -2573,11 +2731,23 @@ export class ThreeIsoGame {
       npc.spriteMaterial.color.copy(npc.flashTimer > 0 ? NPC_TOUCH_FLASH_COLOR : npc.baseTint);
       npc.spriteMaterial.needsUpdate = true;
 
-      npc.sprite.position.set(npc.x, npc.z, npc.y);
-      npc.sprite.renderOrder = 30;
+      this.setActorDepthProxyPosition(
+        npc.depthProxy,
+        npc.x,
+        npc.z,
+        npc.y,
+        proxyHeight
+      );
+      this.setActorSpritePosition(
+        npc.sprite,
+        npc.x,
+        npc.z,
+        npc.y
+      );
+      npc.sprite.renderOrder = ACTOR_SPRITE_RENDER_ORDER;
       npc.shadow.position.set(npc.x, npc.z + 0.01, npc.y);
       npc.shadow.scale.setScalar(1);
-      npc.shadow.renderOrder = 1;
+      npc.shadow.renderOrder = ACTOR_SHADOW_RENDER_ORDER;
     }
   }
 

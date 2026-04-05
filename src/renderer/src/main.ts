@@ -76,6 +76,23 @@ lightingPanel.innerHTML = `
     <span>Shadow Quality <output id="shadow-quality-value"></output></span>
     <input id="shadow-quality-slider" type="range" min="256" max="4096" step="256" />
   </label>
+  <h2>Actor Occlusion Debug</h2>
+  <label class="debug-control">
+    <span>Proxy Width <output id="proxy-width-value"></output></span>
+    <input id="proxy-width-slider" type="range" min="0.3" max="1.4" step="0.01" />
+  </label>
+  <label class="debug-control">
+    <span>Proxy Height <output id="proxy-height-value"></output></span>
+    <input id="proxy-height-slider" type="range" min="0.3" max="1.4" step="0.01" />
+  </label>
+  <label class="debug-control">
+    <span>Sprite Bias <output id="sprite-bias-value"></output></span>
+    <input id="sprite-bias-slider" type="range" min="0" max="0.1" step="0.001" />
+  </label>
+  <label class="debug-control">
+    <span>Proxy Bias <output id="proxy-bias-value"></output></span>
+    <input id="proxy-bias-slider" type="range" min="0" max="0.1" step="0.001" />
+  </label>
 `;
 root.appendChild(lightingPanel);
 
@@ -115,12 +132,20 @@ const sunElevationSlider = lightingPanel.querySelector<HTMLInputElement>('#sun-e
 const heightTintSlider = lightingPanel.querySelector<HTMLInputElement>('#height-tint-slider');
 const shadowToggle = lightingPanel.querySelector<HTMLInputElement>('#shadow-toggle');
 const shadowQualitySlider = lightingPanel.querySelector<HTMLInputElement>('#shadow-quality-slider');
+const proxyWidthSlider = lightingPanel.querySelector<HTMLInputElement>('#proxy-width-slider');
+const proxyHeightSlider = lightingPanel.querySelector<HTMLInputElement>('#proxy-height-slider');
+const spriteBiasSlider = lightingPanel.querySelector<HTMLInputElement>('#sprite-bias-slider');
+const proxyBiasSlider = lightingPanel.querySelector<HTMLInputElement>('#proxy-bias-slider');
 const ambientValue = lightingPanel.querySelector<HTMLOutputElement>('#ambient-value');
 const sunValue = lightingPanel.querySelector<HTMLOutputElement>('#sun-value');
 const sunAngleValue = lightingPanel.querySelector<HTMLOutputElement>('#sun-angle-value');
 const sunElevationValue = lightingPanel.querySelector<HTMLOutputElement>('#sun-elevation-value');
 const heightTintValue = lightingPanel.querySelector<HTMLOutputElement>('#height-tint-value');
 const shadowQualityValue = lightingPanel.querySelector<HTMLOutputElement>('#shadow-quality-value');
+const proxyWidthValue = lightingPanel.querySelector<HTMLOutputElement>('#proxy-width-value');
+const proxyHeightValue = lightingPanel.querySelector<HTMLOutputElement>('#proxy-height-value');
+const spriteBiasValue = lightingPanel.querySelector<HTMLOutputElement>('#sprite-bias-value');
+const proxyBiasValue = lightingPanel.querySelector<HTMLOutputElement>('#proxy-bias-value');
 
 if (
   !ambientSlider ||
@@ -130,12 +155,20 @@ if (
   !heightTintSlider ||
   !shadowToggle ||
   !shadowQualitySlider ||
+  !proxyWidthSlider ||
+  !proxyHeightSlider ||
+  !spriteBiasSlider ||
+  !proxyBiasSlider ||
   !ambientValue ||
   !sunValue ||
   !sunAngleValue ||
   !sunElevationValue ||
   !heightTintValue ||
-  !shadowQualityValue
+  !shadowQualityValue ||
+  !proxyWidthValue ||
+  !proxyHeightValue ||
+  !spriteBiasValue ||
+  !proxyBiasValue
 ) {
   throw new Error('Expected lighting debug controls.');
 }
@@ -155,6 +188,16 @@ const syncLightingUi = (): void => {
   sunElevationValue.textContent = `${lighting.sunElevationDegrees.toFixed(0)}deg`;
   heightTintValue.textContent = lighting.heightTintStrength.toFixed(2);
   shadowQualityValue.textContent = lighting.shadowQuality.toFixed(0);
+
+  const actorOcclusion = game.getDebugActorOcclusion();
+  proxyWidthSlider.value = actorOcclusion.proxyWidthFactor.toFixed(2);
+  proxyHeightSlider.value = actorOcclusion.proxyHeightFactor.toFixed(2);
+  spriteBiasSlider.value = actorOcclusion.spriteCameraBias.toFixed(3);
+  proxyBiasSlider.value = actorOcclusion.proxyCameraBias.toFixed(3);
+  proxyWidthValue.textContent = actorOcclusion.proxyWidthFactor.toFixed(2);
+  proxyHeightValue.textContent = actorOcclusion.proxyHeightFactor.toFixed(2);
+  spriteBiasValue.textContent = actorOcclusion.spriteCameraBias.toFixed(3);
+  proxyBiasValue.textContent = actorOcclusion.proxyCameraBias.toFixed(3);
 };
 
 ambientSlider.addEventListener('input', () => {
@@ -189,6 +232,26 @@ shadowToggle.addEventListener('change', () => {
 
 shadowQualitySlider.addEventListener('input', () => {
   game.setDebugShadowQuality(Number(shadowQualitySlider.value));
+  syncLightingUi();
+});
+
+proxyWidthSlider.addEventListener('input', () => {
+  game.setDebugActorDepthProxyWidthFactor(Number(proxyWidthSlider.value));
+  syncLightingUi();
+});
+
+proxyHeightSlider.addEventListener('input', () => {
+  game.setDebugActorDepthProxyHeightFactor(Number(proxyHeightSlider.value));
+  syncLightingUi();
+});
+
+spriteBiasSlider.addEventListener('input', () => {
+  game.setDebugActorSpriteCameraBias(Number(spriteBiasSlider.value));
+  syncLightingUi();
+});
+
+proxyBiasSlider.addEventListener('input', () => {
+  game.setDebugActorDepthProxyCameraBias(Number(proxyBiasSlider.value));
   syncLightingUi();
 });
 
