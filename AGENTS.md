@@ -2,29 +2,36 @@
 
 ## Project Structure & Module Organization
 
-This repo is an Electron + Vite + TypeScript desktop game prototype. The active renderer is now **Three.js**, not PixiJS, though the older Pixi path is still kept in the repo as reference.
+This repo is an Electron + Vite + TypeScript desktop game prototype. The active renderer is **Three.js**. The older Pixi path is still in the repo as reference, but it is not the live runtime.
 
 - `src/main/`: Electron main-process entry.
 - `src/preload/`: preload bridge.
-- `src/renderer/src/main.ts`: renderer bootstrap, HUD/compass setup, asset loading.
+- `src/renderer/src/main.ts`: renderer bootstrap, HUD/debug UI, asset loading.
 - `src/renderer/src/three-game.ts`: active game/runtime implementation.
 - `src/renderer/src/game.ts`: older Pixi-based prototype/reference path.
 - `src/renderer/src/style.css`: HUD/overlay styling.
-- Root assets: `characters.png`, `new-tileset.png`.
+- `characters.png`: player/NPC sprite sheet.
+- `Flowers/Flowers_With_Outline_Spritesheet.png`: flower prop sprite sheet used by the current runtime.
 
 ## Current Runtime Notes
 
-- Terrain is rendered as real 3D cubes in Three.js.
-- Terrain is generated on startup from layered noise over a `168x144` map, with terraced heights currently in the `1..6` range.
-- Tile columns can now mix materials per vertical layer; do not assume one material per stack.
-- Actors are billboard sprites from `characters.png`.
-- Collision is **not** full 3D physics; gameplay still uses logical tile/height checks.
-- The player now uses a small fake-capsule plan-view collision radius (`PLAYER_COLLISION_RADIUS`) instead of a pure point.
-- Actor-vs-terrain occlusion uses a **local multi-pass** rule for nearby cubes, not a global sorter.
-- There are two NPC groups in the current prototype: a few slow wandering NPCs and a larger stationary set. Both are only active/visible inside an alive radius around the player.
+- Terrain is startup-generated from layered noise across a `168x144` map, with terraced heights currently in the `1..6` range.
+- Tile columns can mix materials per vertical layer; do not assume one material per stack.
+- Opaque terrain is chunked and greedily merged. The nearby front-occlusion layer is still a separate dynamic instanced pass.
+- Terrain readability currently uses top-edge bands with debug tuning for width, darken/lighten, and height tint.
+- The player is a billboard sprite with logical tile-height collision, jump physics, and a local terrain-occlusion rule.
+- NPCs are billboard sprites from `characters.png`, split into a small wandering set and a larger stationary set.
+- Flower props are billboard sprites from `Flowers/Flowers_With_Outline_Spritesheet.png`, spawned randomly at startup and treated similarly to stationary actors.
+- Actor updates and rendering are gated by an alive radius around the player.
+- The current combat/input prototype supports directional attacks:
+  - left click attacks toward the clicked screen direction
+  - tapping `Shift` attacks in the current facing direction
+  - attacks currently use a temporary visible hurtbox option, fixed-duration timing, simple knockback, and per-target single-hit tracking
+- NPCs and flowers can flash on touch or on attack.
+- Collision is still gameplay/logical collision, not full 3D physics.
 - A temporary free camera is enabled: `` ` `` toggles it, left mouse drag rotates/orbits the camera, and `Tab` / `Shift+Tab` still snap back to quarter-turn views.
-- The renderer HUD now includes a compass, FPS counter, and lighting/shadow debug controls.
-- Current perf caveat: terrain is still built as one mesh per exposed cube layer, so shadows and map density are the first things to scrutinize when performance drops.
+- The renderer HUD includes a compass, FPS counter, lighting/shadow controls, terrain readability controls, actor-occlusion tuning controls, and a hurtbox visibility toggle.
+- Current caveat: actor ordering and actor-vs-terrain occlusion are still being tuned. Be careful when changing render order, sprite depth settings, proxy placement, or the player/front-terrain overlay path.
 
 ## Asset Notes
 
@@ -39,6 +46,12 @@ This repo is an Electron + Vite + TypeScript desktop game prototype. The active 
 - next `16px` is the top diamond surface
 
 These are source-art facts. Do **not** treat the atlas as ordinary flat top/side textures without checking the projection assumptions first.
+
+`Flowers/Flowers_With_Outline_Spritesheet.png` facts:
+
+- arranged as `6x2`
+- currently used as 12 random flower variants
+- runtime flower scale is intentionally larger than source-pixel parity right now
 
 ## Build, Test, and Development Commands
 
@@ -59,6 +72,7 @@ Before committing rendering/gameplay work, run:
 - Keep gameplay/math helpers small and explicit.
 - Prefer changing `three-game.ts` for active gameplay/rendering work unless intentionally touching the old Pixi path.
 - Prefer deterministic startup generation and debug-friendly constants over hard-coded one-off map edits unless the change is explicitly about authored content.
+- When touching actor rendering, try to keep player, NPC, flower, proxy, shadow, and front-terrain interactions in mind together; many bugs in this codepath come from fixing only one actor type.
 
 ## Direction Convention
 
@@ -76,6 +90,6 @@ Screen-direction language has been sanity-checked:
 
 Use short, imperative, outcome-focused commit messages, for example:
 
-- `Add first working Three.js cube prototype`
-- `Refine 3D occlusion and temporary orbit camera`
 - `Add startup terrain generation and NPC activity culling`
+- `Greedy mesh terrain and stabilize occlusion layering`
+- `Add flower props and prototype directional attacks`
