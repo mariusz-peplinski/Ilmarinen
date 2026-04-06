@@ -68,6 +68,18 @@ lightingPanel.innerHTML = `
     <span>Height Tint <output id="height-tint-value"></output></span>
     <input id="height-tint-slider" type="range" min="0" max="1" step="0.02" />
   </label>
+  <label class="debug-control">
+    <span>Edge Darken <output id="top-edge-brightness-value"></output></span>
+    <input id="top-edge-brightness-slider" type="range" min="0.3" max="1" step="0.02" />
+  </label>
+  <label class="debug-control">
+    <span>Edge Width <output id="top-edge-width-value"></output></span>
+    <input id="top-edge-width-slider" type="range" min="0.04" max="0.4" step="0.01" />
+  </label>
+  <label class="debug-toggle">
+    <input id="top-edge-lighten-toggle" type="checkbox" />
+    <span>Edge lighten</span>
+  </label>
   <label class="debug-toggle">
     <input id="shadow-toggle" type="checkbox" />
     <span>Terrain shadows</span>
@@ -130,6 +142,9 @@ const sunSlider = lightingPanel.querySelector<HTMLInputElement>('#sun-slider');
 const sunAngleSlider = lightingPanel.querySelector<HTMLInputElement>('#sun-angle-slider');
 const sunElevationSlider = lightingPanel.querySelector<HTMLInputElement>('#sun-elevation-slider');
 const heightTintSlider = lightingPanel.querySelector<HTMLInputElement>('#height-tint-slider');
+const topEdgeBrightnessSlider = lightingPanel.querySelector<HTMLInputElement>('#top-edge-brightness-slider');
+const topEdgeWidthSlider = lightingPanel.querySelector<HTMLInputElement>('#top-edge-width-slider');
+const topEdgeLightenToggle = lightingPanel.querySelector<HTMLInputElement>('#top-edge-lighten-toggle');
 const shadowToggle = lightingPanel.querySelector<HTMLInputElement>('#shadow-toggle');
 const shadowQualitySlider = lightingPanel.querySelector<HTMLInputElement>('#shadow-quality-slider');
 const proxyWidthSlider = lightingPanel.querySelector<HTMLInputElement>('#proxy-width-slider');
@@ -141,6 +156,8 @@ const sunValue = lightingPanel.querySelector<HTMLOutputElement>('#sun-value');
 const sunAngleValue = lightingPanel.querySelector<HTMLOutputElement>('#sun-angle-value');
 const sunElevationValue = lightingPanel.querySelector<HTMLOutputElement>('#sun-elevation-value');
 const heightTintValue = lightingPanel.querySelector<HTMLOutputElement>('#height-tint-value');
+const topEdgeBrightnessValue = lightingPanel.querySelector<HTMLOutputElement>('#top-edge-brightness-value');
+const topEdgeWidthValue = lightingPanel.querySelector<HTMLOutputElement>('#top-edge-width-value');
 const shadowQualityValue = lightingPanel.querySelector<HTMLOutputElement>('#shadow-quality-value');
 const proxyWidthValue = lightingPanel.querySelector<HTMLOutputElement>('#proxy-width-value');
 const proxyHeightValue = lightingPanel.querySelector<HTMLOutputElement>('#proxy-height-value');
@@ -153,6 +170,9 @@ if (
   !sunAngleSlider ||
   !sunElevationSlider ||
   !heightTintSlider ||
+  !topEdgeBrightnessSlider ||
+  !topEdgeWidthSlider ||
+  !topEdgeLightenToggle ||
   !shadowToggle ||
   !shadowQualitySlider ||
   !proxyWidthSlider ||
@@ -164,6 +184,8 @@ if (
   !sunAngleValue ||
   !sunElevationValue ||
   !heightTintValue ||
+  !topEdgeBrightnessValue ||
+  !topEdgeWidthValue ||
   !shadowQualityValue ||
   !proxyWidthValue ||
   !proxyHeightValue ||
@@ -180,6 +202,9 @@ const syncLightingUi = (): void => {
   sunAngleSlider.value = lighting.sunAngleDegrees.toFixed(0);
   sunElevationSlider.value = lighting.sunElevationDegrees.toFixed(0);
   heightTintSlider.value = lighting.heightTintStrength.toFixed(2);
+  topEdgeBrightnessSlider.value = lighting.topEdgeBandBrightness.toFixed(2);
+  topEdgeWidthSlider.value = lighting.topEdgeBandWidth.toFixed(2);
+  topEdgeLightenToggle.checked = lighting.topEdgeBandLighten;
   shadowToggle.checked = lighting.shadowsEnabled;
   shadowQualitySlider.value = lighting.shadowQuality.toFixed(0);
   ambientValue.textContent = lighting.ambientIntensity.toFixed(2);
@@ -187,6 +212,8 @@ const syncLightingUi = (): void => {
   sunAngleValue.textContent = `${lighting.sunAngleDegrees.toFixed(0)}deg`;
   sunElevationValue.textContent = `${lighting.sunElevationDegrees.toFixed(0)}deg`;
   heightTintValue.textContent = lighting.heightTintStrength.toFixed(2);
+  topEdgeBrightnessValue.textContent = lighting.topEdgeBandBrightness.toFixed(2);
+  topEdgeWidthValue.textContent = lighting.topEdgeBandWidth.toFixed(2);
   shadowQualityValue.textContent = lighting.shadowQuality.toFixed(0);
 
   const actorOcclusion = game.getDebugActorOcclusion();
@@ -222,6 +249,21 @@ sunElevationSlider.addEventListener('input', () => {
 
 heightTintSlider.addEventListener('input', () => {
   game.setDebugHeightTintStrength(Number(heightTintSlider.value));
+  syncLightingUi();
+});
+
+topEdgeBrightnessSlider.addEventListener('input', () => {
+  game.setDebugTopEdgeBandBrightness(Number(topEdgeBrightnessSlider.value));
+  syncLightingUi();
+});
+
+topEdgeWidthSlider.addEventListener('input', () => {
+  game.setDebugTopEdgeBandWidth(Number(topEdgeWidthSlider.value));
+  syncLightingUi();
+});
+
+topEdgeLightenToggle.addEventListener('change', () => {
+  game.setDebugTopEdgeBandLighten(topEdgeLightenToggle.checked);
   syncLightingUi();
 });
 
