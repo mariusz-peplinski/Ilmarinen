@@ -328,8 +328,8 @@ const TERRAIN_CHUNK_SIZE = 16;
 const ACTOR_DEPTH_PROXY_RENDER_ORDER = -10;
 const ACTOR_SHADOW_RENDER_ORDER = 10;
 const ACTOR_SPRITE_RENDER_ORDER = 11;
-const NON_PLAYER_SHADOW_RENDER_ORDER = 22;
-const NON_PLAYER_SPRITE_RENDER_ORDER = 23;
+const ACTOR_SORT_RENDER_ORDER_BASE = 40;
+const ACTOR_SORT_RENDER_ORDER_SCALE = 100;
 const DEFAULT_ACTOR_SPRITE_CAMERA_BIAS = 0.03;
 const DEFAULT_ACTOR_DEPTH_PROXY_CAMERA_BIAS = 0.01;
 const NON_PLAYER_SPRITE_CAMERA_BIAS_MULTIPLIER = 6;
@@ -1053,11 +1053,7 @@ export class ThreeIsoGame {
 
     this.buildTerrain();
 
-    this.spriteMaterial = this.createActorSpriteMaterial(
-      this.frameTextures[this.currentDirection][1],
-      '#ffffff',
-      true
-    );
+    this.spriteMaterial = this.createActorSpriteMaterial(this.frameTextures[this.currentDirection][1]);
     this.playerSprite = this.createActorSprite(this.spriteMaterial);
     this.playerDepthProxy = this.createActorDepthProxy(this.playerDepthProxyGeometry);
     this.actorDepthGroup.add(this.playerDepthProxy);
@@ -1676,6 +1672,18 @@ export class ThreeIsoGame {
         -this.actorSpriteCameraBias * biasMultiplier
       );
     }
+  }
+
+  private getActorRenderOrder(worldX: number, worldY: number, footZ: number, offset = 0): number {
+    const basis = this.getPlaneBasis();
+    const frontness = -(worldX * basis.topNorm.x + worldY * basis.topNorm.y);
+    const lateral = worldX * basis.rightNorm.x + worldY * basis.rightNorm.y;
+    const heightBias = footZ / Math.max(this.blockHeightScale, 0.001) * 0.02;
+    return (
+      ACTOR_SORT_RENDER_ORDER_BASE +
+      Math.round((frontness + lateral * 0.01 + heightBias) * ACTOR_SORT_RENDER_ORDER_SCALE) +
+      offset
+    );
   }
 
   private updateAttackDebugVisual(): void {
@@ -3728,14 +3736,19 @@ export class ThreeIsoGame {
       this.playerSprite,
       this.player.x,
       this.player.z,
+      this.player.y
+    );
+    const playerRenderOrder = this.getActorRenderOrder(
+      this.player.x,
       this.player.y,
+      this.player.z,
       1
     );
-    this.playerSprite.renderOrder = NON_PLAYER_SPRITE_RENDER_ORDER;
+    this.playerSprite.renderOrder = playerRenderOrder;
 
     this.shadowMesh.position.set(this.player.x, groundHeight + 0.01, this.player.y);
     this.shadowMesh.scale.setScalar(shadowScale);
-    this.shadowMesh.renderOrder = NON_PLAYER_SHADOW_RENDER_ORDER;
+    this.shadowMesh.renderOrder = playerRenderOrder - 1;
     this.updateAttackDebugVisual();
 
     this.updateTerrainOcclusion();
@@ -3784,10 +3797,11 @@ export class ThreeIsoGame {
         npc.y,
         NON_PLAYER_SPRITE_CAMERA_BIAS_MULTIPLIER
       );
-      npc.sprite.renderOrder = NON_PLAYER_SPRITE_RENDER_ORDER;
+      const npcRenderOrder = this.getActorRenderOrder(npc.x, npc.y, npc.z, 1);
+      npc.sprite.renderOrder = npcRenderOrder;
       npc.shadow.position.set(npc.x, npc.z + 0.01, npc.y);
       npc.shadow.scale.setScalar(1);
-      npc.shadow.renderOrder = NON_PLAYER_SHADOW_RENDER_ORDER;
+      npc.shadow.renderOrder = npcRenderOrder - 1;
     }
   }
 
@@ -3830,10 +3844,11 @@ export class ThreeIsoGame {
         flower.y,
         NON_PLAYER_SPRITE_CAMERA_BIAS_MULTIPLIER
       );
-      flower.sprite.renderOrder = NON_PLAYER_SPRITE_RENDER_ORDER;
+      const flowerRenderOrder = this.getActorRenderOrder(flower.x, flower.y, flower.z, 1);
+      flower.sprite.renderOrder = flowerRenderOrder;
       flower.shadow.position.set(flower.x, flower.z + 0.01, flower.y);
       flower.shadow.scale.setScalar(FLOWER_SHADOW_SCALE);
-      flower.shadow.renderOrder = NON_PLAYER_SHADOW_RENDER_ORDER;
+      flower.shadow.renderOrder = flowerRenderOrder - 1;
     }
   }
 
