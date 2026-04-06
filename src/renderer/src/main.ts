@@ -1,6 +1,7 @@
 import './style.css';
 import { ThreeIsoGame } from './three-game';
 import charactersUrl from '../../../characters.png?url';
+import flowersUrl from '../../../Flowers/Flowers_With_Outline_Spritesheet.png?url';
 
 const root = document.querySelector<HTMLDivElement>('#app');
 
@@ -15,6 +16,7 @@ hud.innerHTML = `
   <p>
     <strong>Move:</strong> WASD or arrows<br />
     <strong>Jump:</strong> Space<br />
+    <strong>Attack:</strong> Click or tap Shift<br />
     <strong>Rotate View:</strong> Tab / Shift+Tab<br />
     <strong>Debug Free Camera:</strong> \` (toggle), then drag with left mouse<br />
     We are now in the Three.js migration pass: real 3D terrain, an orthographic camera, and billboard actor sprites.
@@ -105,6 +107,10 @@ lightingPanel.innerHTML = `
     <span>Proxy Bias <output id="proxy-bias-value"></output></span>
     <input id="proxy-bias-slider" type="range" min="0" max="0.1" step="0.001" />
   </label>
+  <label class="debug-toggle">
+    <input id="attack-hurtbox-toggle" type="checkbox" />
+    <span>Display Hurtbox</span>
+  </label>
 `;
 root.appendChild(lightingPanel);
 
@@ -116,8 +122,11 @@ const loadImage = async (src: string): Promise<HTMLImageElement> =>
     image.src = src;
   });
 
-const charactersImage = await loadImage(charactersUrl);
-const game = new ThreeIsoGame(root, hudStatus, compass, charactersImage);
+const [charactersImage, flowersImage] = await Promise.all([
+  loadImage(charactersUrl),
+  loadImage(flowersUrl)
+]);
+const game = new ThreeIsoGame(root, hudStatus, compass, charactersImage, flowersImage);
 
 let fpsFrames = 0;
 let fpsWindowStart = performance.now();
@@ -151,6 +160,7 @@ const proxyWidthSlider = lightingPanel.querySelector<HTMLInputElement>('#proxy-w
 const proxyHeightSlider = lightingPanel.querySelector<HTMLInputElement>('#proxy-height-slider');
 const spriteBiasSlider = lightingPanel.querySelector<HTMLInputElement>('#sprite-bias-slider');
 const proxyBiasSlider = lightingPanel.querySelector<HTMLInputElement>('#proxy-bias-slider');
+const attackHurtboxToggle = lightingPanel.querySelector<HTMLInputElement>('#attack-hurtbox-toggle');
 const ambientValue = lightingPanel.querySelector<HTMLOutputElement>('#ambient-value');
 const sunValue = lightingPanel.querySelector<HTMLOutputElement>('#sun-value');
 const sunAngleValue = lightingPanel.querySelector<HTMLOutputElement>('#sun-angle-value');
@@ -179,6 +189,7 @@ if (
   !proxyHeightSlider ||
   !spriteBiasSlider ||
   !proxyBiasSlider ||
+  !attackHurtboxToggle ||
   !ambientValue ||
   !sunValue ||
   !sunAngleValue ||
@@ -225,6 +236,7 @@ const syncLightingUi = (): void => {
   proxyHeightValue.textContent = actorOcclusion.proxyHeightFactor.toFixed(2);
   spriteBiasValue.textContent = actorOcclusion.spriteCameraBias.toFixed(3);
   proxyBiasValue.textContent = actorOcclusion.proxyCameraBias.toFixed(3);
+  attackHurtboxToggle.checked = actorOcclusion.showAttackHurtbox;
 };
 
 ambientSlider.addEventListener('input', () => {
@@ -294,6 +306,11 @@ spriteBiasSlider.addEventListener('input', () => {
 
 proxyBiasSlider.addEventListener('input', () => {
   game.setDebugActorDepthProxyCameraBias(Number(proxyBiasSlider.value));
+  syncLightingUi();
+});
+
+attackHurtboxToggle.addEventListener('change', () => {
+  game.setDebugShowAttackHurtbox(attackHurtboxToggle.checked);
   syncLightingUi();
 });
 

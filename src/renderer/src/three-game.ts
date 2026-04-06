@@ -64,6 +64,7 @@ interface PlayerState {
 }
 
 interface NpcState {
+  id: string;
   kind: 'mobile' | 'stationary';
   x: number;
   y: number;
@@ -77,13 +78,57 @@ interface NpcState {
   moveAngle: number;
   moveTimer: number;
   idleTimer: number;
-  flashTimer: number;
+  knockbackVX: number;
+  knockbackVY: number;
+  touchFlashTimer: number;
+  attackFlashTimer: number;
   playerTouching: boolean;
   baseTint: Color;
   spriteMaterial: SpriteMaterial;
   sprite: Sprite;
   depthProxy: Mesh;
   shadow: Mesh;
+}
+
+interface FlowerState {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  active: boolean;
+  knockbackVX: number;
+  knockbackVY: number;
+  touchFlashTimer: number;
+  attackFlashTimer: number;
+  playerTouching: boolean;
+  spriteMaterial: SpriteMaterial;
+  sprite: Sprite;
+  depthProxy: Mesh;
+  shadow: Mesh;
+  frameTexture: CanvasTexture;
+}
+
+type AttackInteractionKind = 'damage' | 'harvest' | 'smash';
+
+interface AttackProfile {
+  duration: number;
+  cooldown: number;
+  reach: number;
+  width: number;
+  height: number;
+  knockback: number;
+  damage: number;
+  interactionKind: AttackInteractionKind;
+  affectsNpcs: boolean;
+  affectsFlowers: boolean;
+}
+
+interface ActiveAttackState {
+  profile: AttackProfile;
+  worldDirection: Vec2;
+  remaining: number;
+  hitTargets: Set<string>;
+  facingDirectionIndex: number;
 }
 
 type TerrainSideDirection = 'east' | 'west' | 'south' | 'north';
@@ -188,6 +233,7 @@ interface ActorOcclusionDebugState {
   proxyHeightFactor: number;
   spriteCameraBias: number;
   proxyCameraBias: number;
+  showAttackHurtbox: boolean;
 }
 
 const MAX_RUN_SPEED = 5.4;
@@ -240,33 +286,69 @@ const HUD_UPDATE_INTERVAL = 1;
 const MAP_GENERATION_SEED = 0x51f15e;
 const MOBILE_NPC_COUNT = 8;
 const STATIONARY_NPC_COUNT = MOBILE_NPC_COUNT * 4;
+const FLOWER_COUNT = 96;
 const MOBILE_NPC_TINT = '#74a9ff';
 const STATIONARY_NPC_TINT = '#ff7979';
 const NPC_TOUCH_FLASH_TINT = '#ffe66d';
 const NPC_TOUCH_FLASH_TIME = 0.18;
 const NPC_TOUCH_FLASH_COLOR = new Color(NPC_TOUCH_FLASH_TINT);
+const ATTACK_FLASH_TIME = 0.24;
+const ATTACK_FLASH_COLOR = new Color('#ff3b3b');
+const FLOWER_BASE_COLOR = new Color('#ffffff');
+const KNOCKBACK_DECAY = 10;
+const KNOCKBACK_STOP_SPEED = 0.08;
 const ACTOR_ALIVE_RADIUS = 28;
 const NPC_SPAWN_EXCLUSION_RADIUS = 9;
+const FLOWER_SHEET_COLUMNS = 6;
+const FLOWER_SHEET_ROWS = 2;
+const FLOWER_VARIANT_COUNT = FLOWER_SHEET_COLUMNS * FLOWER_SHEET_ROWS;
+const FLOWER_COLLISION_RADIUS = 0.17;
 const NPC_IDLE_MIN_TIME = 0.9;
 const NPC_IDLE_MAX_TIME = 2.8;
 const NPC_MOVE_MIN_TIME = 1.4;
 const NPC_MOVE_MAX_TIME = 3.4;
 const NPC_WALK_SPEED_MIN = 0.38;
 const NPC_WALK_SPEED_MAX = 0.72;
+const FLOWER_WORLD_WIDTH = 1.84;
+const FLOWER_WORLD_HEIGHT = 1.84;
+const FLOWER_SHADOW_SCALE = 0.62;
+const DEFAULT_ATTACK_PROFILE: AttackProfile = {
+  duration: 0.3,
+  cooldown: 0.22,
+  reach: 0.95,
+  width: 0.9,
+  height: 1.2,
+  knockback: 18.4,
+  damage: 1,
+  interactionKind: 'damage',
+  affectsNpcs: true,
+  affectsFlowers: true
+};
 const TERRAIN_CHUNK_SIZE = 16;
 const ACTOR_DEPTH_PROXY_RENDER_ORDER = -10;
 const ACTOR_SHADOW_RENDER_ORDER = 10;
 const ACTOR_SPRITE_RENDER_ORDER = 11;
-const DEFAULT_ACTOR_SPRITE_CAMERA_BIAS = 0.01;
+const NON_PLAYER_SHADOW_RENDER_ORDER = 22;
+const NON_PLAYER_SPRITE_RENDER_ORDER = 23;
+const DEFAULT_ACTOR_SPRITE_CAMERA_BIAS = 0.03;
 const DEFAULT_ACTOR_DEPTH_PROXY_CAMERA_BIAS = 0.01;
+const NON_PLAYER_SPRITE_CAMERA_BIAS_MULTIPLIER = 6;
 const ACTOR_SPRITE_WORLD_WIDTH = CHARACTER_SCALE * (CHARACTER_FRAME_WIDTH / CHARACTER_FRAME_HEIGHT);
 const DEFAULT_ACTOR_DEPTH_PROXY_WIDTH_FACTOR = 0.72;
 const DEFAULT_ACTOR_DEPTH_PROXY_HEIGHT_FACTOR = 0.92;
+const NPC_DEPTH_PROXY_WIDTH_FACTOR = 0.98;
+const NPC_DEPTH_PROXY_HEIGHT_FACTOR = 1.02;
+const FLOWER_DEPTH_PROXY_WIDTH_FACTOR = 0.94;
+const FLOWER_DEPTH_PROXY_HEIGHT_FACTOR = 1;
 const PLAYER_DEPTH_PROXY_WIDTH = ACTOR_SPRITE_WORLD_WIDTH * DEFAULT_ACTOR_DEPTH_PROXY_WIDTH_FACTOR;
 const PLAYER_DEPTH_PROXY_HEIGHT = PLAYER_BODY_HEIGHT * DEFAULT_ACTOR_DEPTH_PROXY_HEIGHT_FACTOR;
 const NPC_BODY_HEIGHT = 1.1;
-const NPC_DEPTH_PROXY_WIDTH = ACTOR_SPRITE_WORLD_WIDTH * DEFAULT_ACTOR_DEPTH_PROXY_WIDTH_FACTOR;
-const NPC_DEPTH_PROXY_HEIGHT = NPC_BODY_HEIGHT * DEFAULT_ACTOR_DEPTH_PROXY_HEIGHT_FACTOR;
+const NPC_DEPTH_PROXY_WIDTH = ACTOR_SPRITE_WORLD_WIDTH * NPC_DEPTH_PROXY_WIDTH_FACTOR;
+const NPC_DEPTH_PROXY_HEIGHT = NPC_BODY_HEIGHT * NPC_DEPTH_PROXY_HEIGHT_FACTOR;
+const FLOWER_BODY_HEIGHT = 0.72;
+const FLOWER_DEPTH_PROXY_WIDTH = FLOWER_WORLD_WIDTH * FLOWER_DEPTH_PROXY_WIDTH_FACTOR;
+const FLOWER_DEPTH_PROXY_HEIGHT = FLOWER_BODY_HEIGHT * FLOWER_DEPTH_PROXY_HEIGHT_FACTOR;
+const ATTACK_HURTBOX_ELEVATION = 0.04;
 const DEFAULT_TERRAIN_TOP_EDGE_BAND_WIDTH = 0.12;
 const TERRAIN_TOP_EDGE_BAND_ELEVATION = 0.01;
 const DEFAULT_TERRAIN_TOP_EDGE_BAND_BRIGHTNESS = 0.62;
@@ -304,6 +386,7 @@ const getCompassDirection = (x: number, y: number): string => {
 class InputController {
   private readonly keys = new Set<string>();
   private jumpQueued = false;
+  private attackQueued = false;
   private rotateQueued = 0;
   private freeCameraToggleQueued = false;
 
@@ -330,6 +413,10 @@ class InputController {
         }
       }
 
+      if ((event.code === 'ShiftLeft' || event.code === 'ShiftRight') && !event.repeat) {
+        this.attackQueued = true;
+      }
+
       this.keys.add(event.code);
     });
 
@@ -340,6 +427,7 @@ class InputController {
     window.addEventListener('blur', () => {
       this.keys.clear();
       this.jumpQueued = false;
+      this.attackQueued = false;
       this.rotateQueued = 0;
       this.freeCameraToggleQueued = false;
     });
@@ -377,6 +465,12 @@ class InputController {
   public consumeJump(): boolean {
     const queued = this.jumpQueued;
     this.jumpQueued = false;
+    return queued;
+  }
+
+  public consumeAttack(): boolean {
+    const queued = this.attackQueued;
+    this.attackQueued = false;
     return queued;
   }
 
@@ -696,28 +790,31 @@ function getTerrainSideRotation(direction: TerrainSideDirection): number {
 function loadFrameTexture(
   image: HTMLImageElement,
   column: number,
-  row: number
+  row: number,
+  frameWidth = CHARACTER_FRAME_WIDTH,
+  frameHeight = CHARACTER_FRAME_HEIGHT,
+  contextLabel = 'frame'
 ): CanvasTexture {
   const canvas = document.createElement('canvas');
-  canvas.width = CHARACTER_FRAME_WIDTH;
-  canvas.height = CHARACTER_FRAME_HEIGHT;
+  canvas.width = frameWidth;
+  canvas.height = frameHeight;
   const ctx = canvas.getContext('2d');
 
   if (!ctx) {
-    throw new Error('Failed to create 2D context for character frame extraction.');
+    throw new Error(`Failed to create 2D context for ${contextLabel} extraction.`);
   }
 
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(
     image,
-    column * CHARACTER_FRAME_WIDTH,
-    row * CHARACTER_FRAME_HEIGHT,
-    CHARACTER_FRAME_WIDTH,
-    CHARACTER_FRAME_HEIGHT,
+    column * frameWidth,
+    row * frameHeight,
+    frameWidth,
+    frameHeight,
     0,
     0,
-    CHARACTER_FRAME_WIDTH,
-    CHARACTER_FRAME_HEIGHT
+    frameWidth,
+    frameHeight
   );
 
   const texture = new CanvasTexture(canvas);
@@ -750,14 +847,18 @@ export class ThreeIsoGame {
   private readonly terrainBlocks: TerrainBlockInstance[] = [];
   private readonly terrainChunks: TerrainChunkRender[] = [];
   private readonly frameTextures: CanvasTexture[][];
+  private readonly flowerFrameTextures: CanvasTexture[];
   private readonly spriteMaterial: SpriteMaterial;
   private readonly playerSprite: Sprite;
   private readonly playerDepthProxy: Mesh;
   private readonly shadowMesh: Mesh;
   private readonly npcs: NpcState[] = [];
+  private readonly flowers: FlowerState[] = [];
+  private readonly occupiedActorTiles = new Set<string>();
   private readonly terrainTopGeometry = createTerrainTopGeometry();
   private readonly terrainSideGeometry = createTerrainSideGeometry();
   private readonly shadowGeometry = new CircleGeometry(0.26, 24);
+  private readonly attackDebugGeometry = new BoxGeometry(1, 1, 1);
   private readonly playerDepthProxyGeometry = new BoxGeometry(
     PLAYER_DEPTH_PROXY_WIDTH,
     PLAYER_DEPTH_PROXY_HEIGHT,
@@ -768,6 +869,11 @@ export class ThreeIsoGame {
     NPC_DEPTH_PROXY_HEIGHT,
     NPC_DEPTH_PROXY_WIDTH
   );
+  private readonly flowerDepthProxyGeometry = new BoxGeometry(
+    FLOWER_DEPTH_PROXY_WIDTH,
+    FLOWER_DEPTH_PROXY_HEIGHT,
+    FLOWER_DEPTH_PROXY_WIDTH
+  );
   private readonly actorShadowMaterial = new MeshBasicMaterial({
     color: 0x000000,
     transparent: true,
@@ -775,6 +881,13 @@ export class ThreeIsoGame {
     depthWrite: false,
     depthTest: true,
     side: DoubleSide
+  });
+  private readonly attackDebugMaterial = new MeshBasicMaterial({
+    color: 0xff4f4f,
+    transparent: true,
+    opacity: 0.32,
+    depthWrite: false,
+    depthTest: false
   });
   private readonly actorDepthProxyMaterial = (() => {
     const material = new MeshBasicMaterial();
@@ -826,6 +939,7 @@ export class ThreeIsoGame {
   private readonly occlusionTuning: OcclusionTuning = { ...DEFAULT_OCCLUSION_TUNING };
   private readonly ambientLight = new AmbientLight(0xffffff, DEFAULT_AMBIENT_INTENSITY);
   private readonly sunLight = new DirectionalLight(0xfff1d6, DEFAULT_SUN_INTENSITY);
+  private readonly attackDebugMesh = new Mesh(this.attackDebugGeometry, this.attackDebugMaterial);
   private shadowQuality = DEFAULT_SHADOW_QUALITY;
   private heightTintStrength = DEFAULT_HEIGHT_TINT_STRENGTH;
   private terrainTopEdgeBandBrightness = DEFAULT_TERRAIN_TOP_EDGE_BAND_BRIGHTNESS;
@@ -835,6 +949,7 @@ export class ThreeIsoGame {
   private actorDepthProxyHeightFactor = DEFAULT_ACTOR_DEPTH_PROXY_HEIGHT_FACTOR;
   private actorSpriteCameraBias = DEFAULT_ACTOR_SPRITE_CAMERA_BIAS;
   private actorDepthProxyCameraBias = DEFAULT_ACTOR_DEPTH_PROXY_CAMERA_BIAS;
+  private showAttackHurtbox = true;
   private sunAzimuth = DEFAULT_SUN_AZIMUTH;
   private sunElevation = DEFAULT_SUN_ELEVATION;
   private dragState: DragState | null = null;
@@ -854,6 +969,8 @@ export class ThreeIsoGame {
   private jumpHoldTimer = 0;
   private hudUpdateTimer = 0;
   private lastFrameTime = performance.now();
+  private attackCooldownTimer = 0;
+  private activeAttack: ActiveAttackState | null = null;
 
   private readonly player: PlayerState = {
     x: 12.5,
@@ -869,7 +986,8 @@ export class ThreeIsoGame {
     root: HTMLDivElement,
     hudStatus: HTMLDivElement,
     compass: HTMLDivElement,
-    characterImage: HTMLImageElement
+    characterImage: HTMLImageElement,
+    flowerImage: HTMLImageElement
   ) {
     this.root = root;
     this.hudStatus = hudStatus;
@@ -885,6 +1003,20 @@ export class ThreeIsoGame {
       loadFrameTexture(characterImage, direction, 2),
       loadFrameTexture(characterImage, direction, 3)
     ]);
+    const flowerFrameWidth = Math.floor(flowerImage.width / FLOWER_SHEET_COLUMNS);
+    const flowerFrameHeight = Math.floor(flowerImage.height / FLOWER_SHEET_ROWS);
+    this.flowerFrameTextures = Array.from(
+      { length: FLOWER_VARIANT_COUNT },
+      (_, index) =>
+        loadFrameTexture(
+          flowerImage,
+          index % FLOWER_SHEET_COLUMNS,
+          Math.floor(index / FLOWER_SHEET_COLUMNS),
+          flowerFrameWidth,
+          flowerFrameHeight,
+          'flower frame'
+        )
+    );
 
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x000000, 0);
@@ -913,10 +1045,19 @@ export class ThreeIsoGame {
     this.scene.add(this.actorDepthGroup);
     this.applyTerrainScale();
     this.scene.add(this.actorGroup);
+    this.attackDebugMesh.visible = false;
+    this.attackDebugMesh.renderOrder = ACTOR_SPRITE_RENDER_ORDER + 4;
+    this.attackDebugMesh.castShadow = false;
+    this.attackDebugMesh.receiveShadow = false;
+    this.actorGroup.add(this.attackDebugMesh);
 
     this.buildTerrain();
 
-    this.spriteMaterial = this.createActorSpriteMaterial(this.frameTextures[this.currentDirection][1]);
+    this.spriteMaterial = this.createActorSpriteMaterial(
+      this.frameTextures[this.currentDirection][1],
+      '#ffffff',
+      true
+    );
     this.playerSprite = this.createActorSprite(this.spriteMaterial);
     this.playerDepthProxy = this.createActorDepthProxy(this.playerDepthProxyGeometry);
     this.actorDepthGroup.add(this.playerDepthProxy);
@@ -925,12 +1066,15 @@ export class ThreeIsoGame {
     this.shadowMesh = this.createActorShadow();
     this.actorGroup.add(this.shadowMesh);
     this.spawnNpcs();
+    this.spawnFlowers();
     this.refreshActorDepthProxyScales();
 
     this.updateCompass();
     this.refreshLighting();
     this.updateNpcActivity();
     this.updateNpcVisuals();
+    this.updateFlowerActivity();
+    this.updateFlowerVisuals();
     this.updatePlayerVisuals();
     this.updateCamera(1 / 60, true);
     this.updateHud();
@@ -1086,12 +1230,18 @@ export class ThreeIsoGame {
     this.actorDepthProxyCameraBias = clamp(value, 0, 0.1);
   }
 
+  public setDebugShowAttackHurtbox(enabled: boolean): void {
+    this.showAttackHurtbox = enabled;
+    this.updateAttackDebugVisual();
+  }
+
   public getDebugActorOcclusion(): ActorOcclusionDebugState {
     return {
       proxyWidthFactor: this.actorDepthProxyWidthFactor,
       proxyHeightFactor: this.actorDepthProxyHeightFactor,
       spriteCameraBias: this.actorSpriteCameraBias,
-      proxyCameraBias: this.actorDepthProxyCameraBias
+      proxyCameraBias: this.actorDepthProxyCameraBias,
+      showAttackHurtbox: this.showAttackHurtbox
     };
   }
 
@@ -1111,6 +1261,10 @@ export class ThreeIsoGame {
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
     if (!this.freeCameraEnabled) {
+      if (event.button === 0) {
+        event.preventDefault();
+        this.tryStartPlayerAttack(event.clientX, event.clientY);
+      }
       return;
     }
 
@@ -1171,6 +1325,87 @@ export class ThreeIsoGame {
     this.actorDepthGroup.visible = false;
     this.renderer.render(this.scene, this.camera);
   };
+
+  private tryStartPlayerAttack(clientX: number, clientY: number): void {
+    if (this.activeAttack || this.attackCooldownTimer > 0) {
+      return;
+    }
+
+    const worldDirection = this.getAttackWorldDirectionFromPointer(clientX, clientY);
+    const facingDirectionIndex = this.getActorFacingDirection(worldDirection.x, worldDirection.y);
+    this.currentDirection = facingDirectionIndex;
+    this.activeAttack = {
+      profile: DEFAULT_ATTACK_PROFILE,
+      worldDirection,
+      remaining: DEFAULT_ATTACK_PROFILE.duration,
+      hitTargets: new Set<string>(),
+      facingDirectionIndex
+    };
+    this.updateAttackDebugVisual();
+  }
+
+  private tryStartPlayerAttackInFacingDirection(): void {
+    if (this.activeAttack || this.attackCooldownTimer > 0) {
+      return;
+    }
+
+    const worldDirection = this.getAttackWorldDirectionFromFacing(this.currentDirection);
+    this.activeAttack = {
+      profile: DEFAULT_ATTACK_PROFILE,
+      worldDirection,
+      remaining: DEFAULT_ATTACK_PROFILE.duration,
+      hitTargets: new Set<string>(),
+      facingDirectionIndex: this.currentDirection
+    };
+    this.updateAttackDebugVisual();
+  }
+
+  private getAttackWorldDirectionFromPointer(clientX: number, clientY: number): Vec2 {
+    const playerScreen = this.getWorldScreenPosition(
+      this.player.x,
+      this.player.z + PLAYER_BODY_HEIGHT * 0.55,
+      this.player.y
+    );
+    const deltaX = clientX - playerScreen.x;
+    const deltaY = clientY - playerScreen.y;
+    const lengthSq = deltaX * deltaX + deltaY * deltaY;
+
+    if (lengthSq < 1e-6) {
+      return this.getAttackWorldDirectionFromFacing(this.currentDirection);
+    }
+
+    const snappedAngle = Math.round(Math.atan2(deltaY, deltaX) / (Math.PI / 4)) * (Math.PI / 4);
+    const screenX = Math.cos(snappedAngle);
+    const screenY = Math.sin(snappedAngle);
+    const basis = this.getPlaneBasis();
+
+    return {
+      x: screenX * basis.rightNorm.x - screenY * basis.topNorm.x,
+      y: screenX * basis.rightNorm.y - screenY * basis.topNorm.y
+    };
+  }
+
+  private getAttackWorldDirectionFromFacing(facingDirectionIndex: number): Vec2 {
+    const angle = ((facingDirectionIndex - 2) * Math.PI) / 4;
+    const screenX = Math.cos(angle);
+    const screenY = Math.sin(angle);
+    const basis = this.getPlaneBasis();
+
+    return {
+      x: screenX * basis.rightNorm.x - screenY * basis.topNorm.x,
+      y: screenX * basis.rightNorm.y - screenY * basis.topNorm.y
+    };
+  }
+
+  private getWorldScreenPosition(x: number, y: number, z: number): Vec2 {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const projected = new Vector3(x, y, z).project(this.camera);
+
+    return {
+      x: rect.left + (projected.x * 0.5 + 0.5) * rect.width,
+      y: rect.top + (-projected.y * 0.5 + 0.5) * rect.height
+    };
+  }
 
   private getCompassLabel(
     compass: HTMLDivElement,
@@ -1425,8 +1660,49 @@ export class ThreeIsoGame {
     }
   }
 
-  private setActorSpritePosition(sprite: Sprite, x: number, y: number, z: number): void {
+  private setActorSpritePosition(
+    sprite: Sprite,
+    x: number,
+    y: number,
+    z: number,
+    biasMultiplier = 0
+  ): void {
     sprite.position.set(x, y, z);
+
+    if (biasMultiplier > 0) {
+      this.camera.getWorldDirection(this.reusableCameraDirection);
+      sprite.position.addScaledVector(
+        this.reusableCameraDirection,
+        -this.actorSpriteCameraBias * biasMultiplier
+      );
+    }
+  }
+
+  private updateAttackDebugVisual(): void {
+    if (!this.activeAttack || !this.showAttackHurtbox) {
+      this.attackDebugMesh.visible = false;
+      return;
+    }
+
+    const centerOffset = PLAYER_COLLISION_RADIUS + this.activeAttack.profile.reach * 0.5;
+    const centerX = this.player.x + this.activeAttack.worldDirection.x * centerOffset;
+    const centerZ = this.player.y + this.activeAttack.worldDirection.y * centerOffset;
+    this.attackDebugMesh.visible = true;
+    this.attackDebugMesh.position.set(
+      centerX,
+      this.player.z + this.activeAttack.profile.height * 0.5 + ATTACK_HURTBOX_ELEVATION,
+      centerZ
+    );
+    this.attackDebugMesh.rotation.set(
+      0,
+      Math.atan2(this.activeAttack.worldDirection.x, this.activeAttack.worldDirection.y),
+      0
+    );
+    this.attackDebugMesh.scale.set(
+      this.activeAttack.profile.width,
+      this.activeAttack.profile.height,
+      this.activeAttack.profile.reach
+    );
   }
 
   private createActorDepthProxy(geometry: BoxGeometry): Mesh {
@@ -1452,6 +1728,10 @@ export class ThreeIsoGame {
 
     for (const npc of this.npcs) {
       npc.depthProxy.scale.set(widthScale, heightScale, widthScale);
+    }
+
+    for (const flower of this.flowers) {
+      flower.depthProxy.scale.set(widthScale, heightScale, widthScale);
     }
   }
 
@@ -1484,13 +1764,17 @@ export class ThreeIsoGame {
   }
 
   private createActorSprite(material: SpriteMaterial): Sprite {
+    return this.createBillboardSprite(
+      material,
+      CHARACTER_SCALE * (CHARACTER_FRAME_WIDTH / CHARACTER_FRAME_HEIGHT),
+      CHARACTER_SCALE
+    );
+  }
+
+  private createBillboardSprite(material: SpriteMaterial, width: number, height: number): Sprite {
     const sprite = new Sprite(material);
     sprite.center.set(0.5, 0);
-    sprite.scale.set(
-      CHARACTER_SCALE * (CHARACTER_FRAME_WIDTH / CHARACTER_FRAME_HEIGHT),
-      CHARACTER_SCALE,
-      1
-    );
+    sprite.scale.set(width, height, 1);
     return sprite;
   }
 
@@ -1543,7 +1827,6 @@ export class ThreeIsoGame {
   }
 
   private spawnNpcs(): void {
-    const occupiedTiles = new Set<string>();
     const mobileCandidates = this.collectNpcSpawnCandidates(true);
     const stationaryCandidates = this.collectNpcSpawnCandidates(false);
     this.shuffleSpawnCandidates(mobileCandidates, MAP_GENERATION_SEED + 601);
@@ -1569,6 +1852,7 @@ export class ThreeIsoGame {
       this.actorGroup.add(shadow);
 
       return {
+        id: `npc-${kind}-${Math.floor(x)}-${Math.floor(y)}-${randomSeed}`,
         kind,
         x,
         y,
@@ -1586,7 +1870,10 @@ export class ThreeIsoGame {
           NPC_IDLE_MAX_TIME,
           hashUnit(randomSeed + 2, Math.floor(x), Math.floor(y))
         ),
-        flashTimer: 0,
+        knockbackVX: 0,
+        knockbackVY: 0,
+        touchFlashTimer: 0,
+        attackFlashTimer: 0,
         playerTouching: false,
         baseTint: new Color(tintHex),
         spriteMaterial,
@@ -1607,11 +1894,11 @@ export class ThreeIsoGame {
 
       for (const candidate of candidates) {
         const tileKey = `${Math.floor(candidate.x)}:${Math.floor(candidate.y)}`;
-        if (occupiedTiles.has(tileKey)) {
+        if (this.occupiedActorTiles.has(tileKey)) {
           continue;
         }
 
-        occupiedTiles.add(tileKey);
+        this.occupiedActorTiles.add(tileKey);
         this.npcs.push(
           createNpc(kind, candidate.x, candidate.y, tintHex, MAP_GENERATION_SEED + seedOffset + this.npcs.length * 17)
         );
@@ -1625,6 +1912,61 @@ export class ThreeIsoGame {
 
     addNpcs('mobile', MOBILE_NPC_COUNT, MOBILE_NPC_TINT, mobileCandidates, 1300);
     addNpcs('stationary', STATIONARY_NPC_COUNT, STATIONARY_NPC_TINT, stationaryCandidates, 2100);
+  }
+
+  private spawnFlowers(): void {
+    const candidates = this.collectNpcSpawnCandidates(false);
+    this.shuffleSpawnCandidates(candidates, MAP_GENERATION_SEED + 3001);
+    const random = createSeededRandom(MAP_GENERATION_SEED + 4103);
+    let spawned = 0;
+
+    for (const candidate of candidates) {
+      const tileKey = `${Math.floor(candidate.x)}:${Math.floor(candidate.y)}`;
+      if (this.occupiedActorTiles.has(tileKey)) {
+        continue;
+      }
+
+      const frameTexture =
+        this.flowerFrameTextures[Math.floor(random() * this.flowerFrameTextures.length)];
+      const spriteMaterial = this.createActorSpriteMaterial(frameTexture, '#ffffff', true);
+      const sprite = this.createBillboardSprite(
+        spriteMaterial,
+        FLOWER_WORLD_WIDTH,
+        FLOWER_WORLD_HEIGHT
+      );
+      const depthProxy = this.createActorDepthProxy(this.flowerDepthProxyGeometry);
+      const shadow = this.createActorShadow();
+      sprite.visible = false;
+      depthProxy.visible = false;
+      shadow.visible = false;
+      this.actorDepthGroup.add(depthProxy);
+      this.actorGroup.add(sprite);
+      this.actorGroup.add(shadow);
+
+      this.occupiedActorTiles.add(tileKey);
+      this.flowers.push({
+        id: `flower-${Math.floor(candidate.x)}-${Math.floor(candidate.y)}-${spawned}`,
+        x: candidate.x,
+        y: candidate.y,
+        z: this.getSupportHeight(candidate.x, candidate.y),
+        active: false,
+        knockbackVX: 0,
+        knockbackVY: 0,
+        touchFlashTimer: 0,
+        attackFlashTimer: 0,
+        playerTouching: false,
+        spriteMaterial,
+        sprite,
+        depthProxy,
+        shadow,
+        frameTexture
+      });
+      spawned += 1;
+
+      if (spawned >= FLOWER_COUNT) {
+        break;
+      }
+    }
   }
 
   private getTopBaseColor(materialKey: MaterialKey): Color {
@@ -2751,34 +3093,203 @@ export class ThreeIsoGame {
     return false;
   }
 
-  private tryMoveGroundActor(npc: NpcState, deltaX: number, deltaY: number): boolean {
+  private tryMoveGroundActor(
+    actor: { x: number; y: number; z: number },
+    deltaX: number,
+    deltaY: number,
+    collisionRadius = NPC_COLLISION_RADIUS,
+    allowDropOff = false
+  ): boolean {
     const nextX = clamp(
-      npc.x + deltaX,
-      MAP_EDGE_PADDING + NPC_COLLISION_RADIUS,
-      this.map.width - MAP_EDGE_PADDING - NPC_COLLISION_RADIUS
+      actor.x + deltaX,
+      MAP_EDGE_PADDING + collisionRadius,
+      this.map.width - MAP_EDGE_PADDING - collisionRadius
     );
     const nextY = clamp(
-      npc.y + deltaY,
-      MAP_EDGE_PADDING + NPC_COLLISION_RADIUS,
-      this.map.height - MAP_EDGE_PADDING - NPC_COLLISION_RADIUS
+      actor.y + deltaY,
+      MAP_EDGE_PADDING + collisionRadius,
+      this.map.height - MAP_EDGE_PADDING - collisionRadius
     );
-    const currentSupport = this.getSupportHeight(npc.x, npc.y);
+    const currentSupport = this.getSupportHeight(actor.x, actor.y);
     const nextSupport = this.getSupportHeight(nextX, nextY);
 
-    if (Math.abs(nextSupport - currentSupport) > 0.02) {
+    if (nextSupport > currentSupport + 0.02) {
       return false;
     }
 
-    if (this.isColliding(nextX, nextY, currentSupport, NPC_COLLISION_RADIUS)) {
+    if (!allowDropOff && currentSupport - nextSupport > 0.02) {
       return false;
     }
 
-    npc.x = nextX;
-    npc.y = nextY;
-    npc.z = nextSupport;
+    if (this.isColliding(nextX, nextY, currentSupport, collisionRadius)) {
+      return false;
+    }
+
+    actor.x = nextX;
+    actor.y = nextY;
+    actor.z = nextSupport;
     return true;
   }
 
+  private updateGroundActorKnockback(
+    actor: { x: number; y: number; z: number; knockbackVX: number; knockbackVY: number },
+    dt: number,
+    collisionRadius: number
+  ): boolean {
+    const speed = Math.hypot(actor.knockbackVX, actor.knockbackVY);
+
+    if (speed <= KNOCKBACK_STOP_SPEED) {
+      actor.knockbackVX = 0;
+      actor.knockbackVY = 0;
+      return false;
+    }
+
+    if (
+      !this.tryMoveGroundActor(
+        actor,
+        actor.knockbackVX * dt,
+        actor.knockbackVY * dt,
+        collisionRadius,
+        true
+      )
+    ) {
+      actor.knockbackVX = 0;
+      actor.knockbackVY = 0;
+      return false;
+    }
+
+    const decay = Math.exp(-KNOCKBACK_DECAY * dt);
+    actor.knockbackVX *= decay;
+    actor.knockbackVY *= decay;
+
+    if (Math.hypot(actor.knockbackVX, actor.knockbackVY) <= KNOCKBACK_STOP_SPEED) {
+      actor.knockbackVX = 0;
+      actor.knockbackVY = 0;
+    }
+
+    return true;
+  }
+
+  private updateActiveAttack(dt: number): void {
+    this.attackCooldownTimer = Math.max(0, this.attackCooldownTimer - dt);
+
+    if (!this.activeAttack) {
+      this.updateAttackDebugVisual();
+      return;
+    }
+
+    this.activeAttack.remaining = Math.max(0, this.activeAttack.remaining - dt);
+    this.applyAttackHits(this.activeAttack);
+
+    if (this.activeAttack.remaining === 0) {
+      this.attackCooldownTimer = this.activeAttack.profile.cooldown;
+      this.activeAttack = null;
+    }
+
+    this.updateAttackDebugVisual();
+  }
+
+  private applyAttackHits(attack: ActiveAttackState): void {
+    if (attack.profile.affectsNpcs) {
+      for (const npc of this.npcs) {
+        if (!npc.active) {
+          continue;
+        }
+
+        this.tryHitTargetWithAttack(
+          attack,
+          npc.id,
+          npc.x,
+          npc.y,
+          npc.z,
+          NPC_COLLISION_RADIUS,
+          NPC_BODY_HEIGHT,
+          () => {
+            npc.attackFlashTimer = ATTACK_FLASH_TIME;
+            npc.knockbackVX = attack.worldDirection.x * attack.profile.knockback;
+            npc.knockbackVY = attack.worldDirection.y * attack.profile.knockback;
+          }
+        );
+      }
+    }
+
+    if (attack.profile.affectsFlowers) {
+      for (const flower of this.flowers) {
+        if (!flower.active) {
+          continue;
+        }
+
+        this.tryHitTargetWithAttack(
+          attack,
+          flower.id,
+          flower.x,
+          flower.y,
+          flower.z,
+          FLOWER_COLLISION_RADIUS,
+          FLOWER_BODY_HEIGHT,
+          () => {
+            flower.attackFlashTimer = ATTACK_FLASH_TIME;
+            flower.knockbackVX = attack.worldDirection.x * attack.profile.knockback * 0.8;
+            flower.knockbackVY = attack.worldDirection.y * attack.profile.knockback * 0.8;
+          }
+        );
+      }
+    }
+  }
+
+  private tryHitTargetWithAttack(
+    attack: ActiveAttackState,
+    targetId: string,
+    targetX: number,
+    targetY: number,
+    targetFootZ: number,
+    targetRadius: number,
+    targetHeight: number,
+    onHit: () => void
+  ): void {
+    if (attack.hitTargets.has(targetId)) {
+      return;
+    }
+
+    if (!this.isPointInsideActiveAttack(attack, targetX, targetY, targetFootZ, targetRadius, targetHeight)) {
+      return;
+    }
+
+    attack.hitTargets.add(targetId);
+    onHit();
+  }
+
+  private isPointInsideActiveAttack(
+    attack: ActiveAttackState,
+    targetX: number,
+    targetY: number,
+    targetFootZ: number,
+    targetRadius: number,
+    targetHeight: number
+  ): boolean {
+    const centerOffset = PLAYER_COLLISION_RADIUS + attack.profile.reach * 0.5;
+    const centerX = this.player.x + attack.worldDirection.x * centerOffset;
+    const centerY = this.player.y + attack.worldDirection.y * centerOffset;
+    const sideAxis = {
+      x: -attack.worldDirection.y,
+      y: attack.worldDirection.x
+    };
+    const deltaX = targetX - centerX;
+    const deltaY = targetY - centerY;
+    const localForward = deltaX * attack.worldDirection.x + deltaY * attack.worldDirection.y;
+    const localSide = deltaX * sideAxis.x + deltaY * sideAxis.y;
+    const halfReach = attack.profile.reach * 0.5 + targetRadius;
+    const halfWidth = attack.profile.width * 0.5 + targetRadius;
+
+    if (Math.abs(localForward) > halfReach || Math.abs(localSide) > halfWidth) {
+      return false;
+    }
+
+    const attackBottom = this.player.z;
+    const attackTop = attackBottom + attack.profile.height;
+    const targetTop = targetFootZ + targetHeight;
+    return targetFootZ <= attackTop && targetTop >= attackBottom;
+  }
   private moveAxis(axis: 'x' | 'y', amount: number): void {
     if (amount === 0) {
       return;
@@ -2827,6 +3338,7 @@ export class ThreeIsoGame {
 
   private update(dt: number): void {
     const jumpPressed = this.input.consumeJump();
+    const attackPressed = this.input.consumeAttack();
     const rotateDelta = this.input.consumeRotate();
     const freeCameraToggled = this.input.consumeFreeCameraToggle();
 
@@ -2846,6 +3358,10 @@ export class ThreeIsoGame {
       this.cameraYaw = Math.PI / 4 + (Math.PI / 2) * this.viewRotation;
       this.updateCompass();
       this.updateCamera(dt, true);
+    }
+
+    if (attackPressed) {
+      this.tryStartPlayerAttackInFacingDirection();
     }
 
     const move = this.input.getScreenMoveVector();
@@ -2984,9 +3500,14 @@ export class ThreeIsoGame {
     this.updateNpcActivity();
     this.updateNpcs(dt);
     this.updateNpcTouchFeedback();
+    this.updateFlowerActivity();
+    this.updateFlowers(dt);
+    this.updateFlowerTouchFeedback();
+    this.updateActiveAttack(dt);
     this.updatePlayerAnimation(dt);
     this.updatePlayerVisuals();
     this.updateNpcVisuals();
+    this.updateFlowerVisuals();
     this.updateCamera(dt, false);
 
     this.hudUpdateTimer = Math.max(0, this.hudUpdateTimer - dt);
@@ -2999,7 +3520,9 @@ export class ThreeIsoGame {
   private updatePlayerAnimation(dt: number): void {
     const planarSpeed = length(this.player.vx, this.player.vy);
 
-    if (planarSpeed > 0.05) {
+    if (this.activeAttack) {
+      this.currentDirection = this.activeAttack.facingDirectionIndex;
+    } else if (planarSpeed > 0.05) {
       this.currentDirection = this.getActorFacingDirection(this.player.vx, this.player.vy);
     }
 
@@ -3041,15 +3564,41 @@ export class ThreeIsoGame {
     }
   }
 
+  private updateFlowerActivity(): void {
+    const aliveRadiusSq = ACTOR_ALIVE_RADIUS * ACTOR_ALIVE_RADIUS;
+
+    for (const flower of this.flowers) {
+      const dx = flower.x - this.player.x;
+      const dy = flower.y - this.player.y;
+      flower.active = dx * dx + dy * dy <= aliveRadiusSq;
+      if (flower.active) {
+        flower.z = this.getSupportHeight(flower.x, flower.y);
+      }
+    }
+  }
+
   private updateNpcs(dt: number): void {
     for (const npc of this.npcs) {
-      npc.flashTimer = Math.max(0, npc.flashTimer - dt);
+      npc.touchFlashTimer = Math.max(0, npc.touchFlashTimer - dt);
+      npc.attackFlashTimer = Math.max(0, npc.attackFlashTimer - dt);
 
       if (!npc.active) {
         npc.vx = 0;
         npc.vy = 0;
         npc.walkTime = 0;
+        npc.knockbackVX = 0;
+        npc.knockbackVY = 0;
         npc.playerTouching = false;
+        continue;
+      }
+
+      const applyingKnockback = this.updateGroundActorKnockback(npc, dt, NPC_COLLISION_RADIUS);
+
+      if (applyingKnockback) {
+        npc.vx = npc.knockbackVX;
+        npc.vy = npc.knockbackVY;
+        npc.currentDirection = this.getActorFacingDirection(npc.vx, npc.vy);
+        npc.walkTime = 0;
         continue;
       }
 
@@ -3099,6 +3648,22 @@ export class ThreeIsoGame {
     }
   }
 
+  private updateFlowers(dt: number): void {
+    for (const flower of this.flowers) {
+      flower.touchFlashTimer = Math.max(0, flower.touchFlashTimer - dt);
+      flower.attackFlashTimer = Math.max(0, flower.attackFlashTimer - dt);
+
+      if (!flower.active) {
+        flower.knockbackVX = 0;
+        flower.knockbackVY = 0;
+        flower.playerTouching = false;
+        continue;
+      }
+
+      this.updateGroundActorKnockback(flower, dt, FLOWER_COLLISION_RADIUS);
+    }
+  }
+
   private updateNpcTouchFeedback(): void {
     const touchRadius = PLAYER_COLLISION_RADIUS + NPC_COLLISION_RADIUS;
     const touchRadiusSq = touchRadius * touchRadius;
@@ -3114,10 +3679,32 @@ export class ThreeIsoGame {
       const touching = dx * dx + dy * dy <= touchRadiusSq;
 
       if (touching && !npc.playerTouching) {
-        npc.flashTimer = NPC_TOUCH_FLASH_TIME;
+        npc.touchFlashTimer = NPC_TOUCH_FLASH_TIME;
       }
 
       npc.playerTouching = touching;
+    }
+  }
+
+  private updateFlowerTouchFeedback(): void {
+    const touchRadius = PLAYER_COLLISION_RADIUS + FLOWER_COLLISION_RADIUS;
+    const touchRadiusSq = touchRadius * touchRadius;
+
+    for (const flower of this.flowers) {
+      if (!flower.active) {
+        flower.playerTouching = false;
+        continue;
+      }
+
+      const dx = flower.x - this.player.x;
+      const dy = flower.y - this.player.y;
+      const touching = dx * dx + dy * dy <= touchRadiusSq;
+
+      if (touching && !flower.playerTouching) {
+        flower.touchFlashTimer = NPC_TOUCH_FLASH_TIME;
+      }
+
+      flower.playerTouching = touching;
     }
   }
 
@@ -3141,13 +3728,15 @@ export class ThreeIsoGame {
       this.playerSprite,
       this.player.x,
       this.player.z,
-      this.player.y
+      this.player.y,
+      1
     );
-    this.playerSprite.renderOrder = ACTOR_SPRITE_RENDER_ORDER;
+    this.playerSprite.renderOrder = NON_PLAYER_SPRITE_RENDER_ORDER;
 
     this.shadowMesh.position.set(this.player.x, groundHeight + 0.01, this.player.y);
     this.shadowMesh.scale.setScalar(shadowScale);
-    this.shadowMesh.renderOrder = ACTOR_SHADOW_RENDER_ORDER;
+    this.shadowMesh.renderOrder = NON_PLAYER_SHADOW_RENDER_ORDER;
+    this.updateAttackDebugVisual();
 
     this.updateTerrainOcclusion();
   }
@@ -3172,7 +3761,13 @@ export class ThreeIsoGame {
           ? Math.floor(npc.walkTime / WALK_FRAME_TIME) % 3
           : 1;
       npc.spriteMaterial.map = this.frameTextures[npc.currentDirection][frameIndex];
-      npc.spriteMaterial.color.copy(npc.flashTimer > 0 ? NPC_TOUCH_FLASH_COLOR : npc.baseTint);
+      npc.spriteMaterial.color.copy(
+        npc.attackFlashTimer > 0
+          ? ATTACK_FLASH_COLOR
+          : npc.touchFlashTimer > 0
+            ? NPC_TOUCH_FLASH_COLOR
+            : npc.baseTint
+      );
       npc.spriteMaterial.needsUpdate = true;
 
       this.setActorDepthProxyPosition(
@@ -3186,12 +3781,59 @@ export class ThreeIsoGame {
         npc.sprite,
         npc.x,
         npc.z,
-        npc.y
+        npc.y,
+        NON_PLAYER_SPRITE_CAMERA_BIAS_MULTIPLIER
       );
-      npc.sprite.renderOrder = ACTOR_SPRITE_RENDER_ORDER;
+      npc.sprite.renderOrder = NON_PLAYER_SPRITE_RENDER_ORDER;
       npc.shadow.position.set(npc.x, npc.z + 0.01, npc.y);
       npc.shadow.scale.setScalar(1);
-      npc.shadow.renderOrder = ACTOR_SHADOW_RENDER_ORDER;
+      npc.shadow.renderOrder = NON_PLAYER_SHADOW_RENDER_ORDER;
+    }
+  }
+
+  private updateFlowerVisuals(): void {
+    const proxyHeight = this.getActorProxyDimensions(
+      FLOWER_DEPTH_PROXY_WIDTH,
+      FLOWER_DEPTH_PROXY_HEIGHT
+    ).height;
+
+    for (const flower of this.flowers) {
+      flower.depthProxy.visible = flower.active;
+      flower.sprite.visible = flower.active;
+      flower.shadow.visible = flower.active;
+
+      if (!flower.active) {
+        continue;
+      }
+
+      flower.spriteMaterial.map = flower.frameTexture;
+      flower.spriteMaterial.color.copy(
+        flower.attackFlashTimer > 0
+          ? ATTACK_FLASH_COLOR
+          : flower.touchFlashTimer > 0
+            ? NPC_TOUCH_FLASH_COLOR
+            : FLOWER_BASE_COLOR
+      );
+      flower.spriteMaterial.needsUpdate = true;
+
+      this.setActorDepthProxyPosition(
+        flower.depthProxy,
+        flower.x,
+        flower.z,
+        flower.y,
+        proxyHeight
+      );
+      this.setActorSpritePosition(
+        flower.sprite,
+        flower.x,
+        flower.z,
+        flower.y,
+        NON_PLAYER_SPRITE_CAMERA_BIAS_MULTIPLIER
+      );
+      flower.sprite.renderOrder = NON_PLAYER_SPRITE_RENDER_ORDER;
+      flower.shadow.position.set(flower.x, flower.z + 0.01, flower.y);
+      flower.shadow.scale.setScalar(FLOWER_SHADOW_SCALE);
+      flower.shadow.renderOrder = NON_PLAYER_SHADOW_RENDER_ORDER;
     }
   }
 
