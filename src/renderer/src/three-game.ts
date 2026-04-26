@@ -28,17 +28,35 @@ import {
   BasicShadowMap
 } from 'three';
 
-type MaterialKey = 'grass' | 'stone' | 'sand' | 'moss';
+type MaterialKey = 'grass' | 'stone' | 'sand' | 'moss' | 'portal';
+type MapId = 'overworld' | 'pocket';
 
 interface Cell {
   height: number;
   materials: MaterialKey[];
 }
 
+interface TeleportTile {
+  x: number;
+  y: number;
+  targetMapId: MapId;
+  targetX: number;
+  targetY: number;
+}
+
+interface MapSpawnConfig {
+  mobileNpcCount: number;
+  stationaryNpcCount: number;
+  flowerCount: number;
+}
+
 interface MapData {
+  id: MapId;
   width: number;
   height: number;
   cells: Cell[];
+  teleports: TeleportTile[];
+  spawns: MapSpawnConfig;
 }
 
 interface Vec2 {
@@ -274,6 +292,12 @@ const CHARACTER_SCALE = 1.35;
 const FRUSTUM_HEIGHT = 18;
 const MAP_WIDTH = 168;
 const MAP_HEIGHT = 144;
+const POCKET_MAP_WIDTH = 30;
+const POCKET_MAP_HEIGHT = 30;
+const OVERWORLD_SPAWN: Vec2 = { x: 12.5, y: 12.5 };
+const OVERWORLD_TELEPORT_TILE: Vec2 = { x: 27, y: 12 };
+const POCKET_TELEPORT_TILE: Vec2 = { x: 15, y: 18 };
+const POCKET_SPAWN: Vec2 = { x: 15.5, y: 18.5 };
 const CAMERA_NEAR = 0.01;
 const CAMERA_FAR = 300;
 const DEFAULT_CAMERA_DISTANCE = 25;
@@ -291,9 +315,9 @@ const AIRBORNE_FRAME_INDEX = 0;
 const SHADOW_CAMERA_RADIUS = 14;
 const HUD_UPDATE_INTERVAL = 1;
 const MAP_GENERATION_SEED = 0x51f15e;
-const MOBILE_NPC_COUNT = 8;
-const STATIONARY_NPC_COUNT = MOBILE_NPC_COUNT * 4;
-const FLOWER_COUNT = 96;
+const DEFAULT_MOBILE_NPC_COUNT = 8;
+const DEFAULT_STATIONARY_NPC_COUNT = DEFAULT_MOBILE_NPC_COUNT * 4;
+const DEFAULT_FLOWER_COUNT = 96;
 const MOBILE_NPC_TINT = '#74a9ff';
 const STATIONARY_NPC_TINT = '#ff7979';
 const NPC_TOUCH_FLASH_TINT = '#ffe66d';
@@ -519,6 +543,20 @@ function getBlockMaterial(map: MapData, x: number, y: number, z: number): Materi
   return cell.materials[z] ?? cell.materials[cell.materials.length - 1] ?? 'stone';
 }
 
+function setColumn(
+  map: MapData,
+  x: number,
+  y: number,
+  height: number,
+  materials: MaterialKey[]
+): void {
+  const cell = getCell(map, x, y);
+  cell.height = height;
+  cell.materials = Array.from({ length: height }, (_, z) =>
+    materials[z] ?? materials[materials.length - 1] ?? 'stone'
+  );
+}
+
 function smoothstep(value: number): number {
   return value * value * (3 - 2 * value);
 }
@@ -608,7 +646,7 @@ function chooseWeightedMaterial(
   x: number,
   y: number,
   z: number,
-  weights: Record<MaterialKey, number>
+  weights: Partial<Record<MaterialKey, number>>
 ): MaterialKey {
   const entries = Object.entries(weights) as [MaterialKey, number][];
   const totalWeight = entries.reduce((sum, [, weight]) => sum + Math.max(weight, 0), 0);
@@ -674,14 +712,29 @@ function buildColumnMaterials(
   return materials;
 }
 
-function createExampleMap(): MapData {
+function createOverworldMap(): MapData {
   const map: MapData = {
+    id: 'overworld',
     width: MAP_WIDTH,
     height: MAP_HEIGHT,
     cells: Array.from({ length: MAP_WIDTH * MAP_HEIGHT }, () => ({
       height: 0,
       materials: []
-    }))
+    })),
+    teleports: [
+      {
+        x: OVERWORLD_TELEPORT_TILE.x,
+        y: OVERWORLD_TELEPORT_TILE.y,
+        targetMapId: 'pocket',
+        targetX: POCKET_SPAWN.x,
+        targetY: POCKET_SPAWN.y
+      }
+    ],
+    spawns: {
+      mobileNpcCount: DEFAULT_MOBILE_NPC_COUNT,
+      stationaryNpcCount: DEFAULT_STATIONARY_NPC_COUNT,
+      flowerCount: DEFAULT_FLOWER_COUNT
+    }
   };
 
   for (let y = 0; y < MAP_HEIGHT; y += 1) {
@@ -758,11 +811,99 @@ function createExampleMap(): MapData {
   const spawnHeight = 2;
   for (let y = 10; y <= 14; y += 1) {
     for (let x = 10; x <= 14; x += 1) {
-      const cell = getCell(map, x, y);
-      cell.height = spawnHeight;
-      cell.materials = buildColumnMaterials(x, y, spawnHeight, 0.5, 0.58, 0.32);
+      setColumn(
+        map,
+        x,
+        y,
+        spawnHeight,
+        buildColumnMaterials(x, y, spawnHeight, 0.5, 0.58, 0.32)
+      );
     }
   }
+
+  for (let x = 15; x <= OVERWORLD_TELEPORT_TILE.x; x += 1) {
+    for (let y = OVERWORLD_TELEPORT_TILE.y - 1; y <= OVERWORLD_TELEPORT_TILE.y + 1; y += 1) {
+      setColumn(
+        map,
+        x,
+        y,
+        spawnHeight,
+        buildColumnMaterials(x, y, spawnHeight, 0.5, 0.58, 0.32)
+      );
+    }
+  }
+
+  setColumn(map, OVERWORLD_TELEPORT_TILE.x, OVERWORLD_TELEPORT_TILE.y, spawnHeight, [
+    'stone',
+    'portal'
+  ]);
+
+  return map;
+}
+
+function createPocketMap(): MapData {
+  const map: MapData = {
+    id: 'pocket',
+    width: POCKET_MAP_WIDTH,
+    height: POCKET_MAP_HEIGHT,
+    cells: Array.from({ length: POCKET_MAP_WIDTH * POCKET_MAP_HEIGHT }, () => ({
+      height: 0,
+      materials: []
+    })),
+    teleports: [
+      {
+        x: POCKET_TELEPORT_TILE.x,
+        y: POCKET_TELEPORT_TILE.y,
+        targetMapId: 'overworld',
+        targetX: OVERWORLD_TELEPORT_TILE.x + 0.5,
+        targetY: OVERWORLD_TELEPORT_TILE.y + 0.5
+      }
+    ],
+    spawns: {
+      mobileNpcCount: 0,
+      stationaryNpcCount: 0,
+      flowerCount: 0
+    }
+  };
+
+  const centerX = (POCKET_MAP_WIDTH - 1) * 0.5;
+  const centerY = (POCKET_MAP_HEIGHT - 1) * 0.5;
+
+  for (let y = 0; y < POCKET_MAP_HEIGHT; y += 1) {
+    for (let x = 0; x < POCKET_MAP_WIDTH; x += 1) {
+      const dx = x - centerX;
+      const dy = y - centerY;
+      const distance = Math.hypot(dx, dy);
+      const rim = clamp((distance - 7) / 8, 0, 1);
+      const noise = octavePerlin2D(MAP_GENERATION_SEED + 701, x * 0.14, y * 0.14, 3, 0.5, 2);
+      const height = clamp(3 - Math.floor(rim * 2.5) + (noise > 0.72 ? 1 : 0), 1, 3);
+      setColumn(
+        map,
+        x,
+        y,
+        height,
+        buildColumnMaterials(x + 300, y + 300, height, 0.48, 0.7, 0.22)
+      );
+    }
+  }
+
+  const portalHeight = 2;
+  for (let y = 13; y <= 19; y += 1) {
+    for (let x = 13; x <= 17; x += 1) {
+      setColumn(
+        map,
+        x,
+        y,
+        portalHeight,
+        buildColumnMaterials(x + 300, y + 300, portalHeight, 0.48, 0.7, 0.22)
+      );
+    }
+  }
+
+  setColumn(map, POCKET_TELEPORT_TILE.x, POCKET_TELEPORT_TILE.y, portalHeight, [
+    'stone',
+    'portal'
+  ]);
 
   return map;
 }
@@ -850,7 +991,11 @@ export class ThreeIsoGame {
   private readonly actorDepthGroup = new Group();
   private readonly actorGroup = new Group();
   private readonly input = new InputController();
-  private readonly map = createExampleMap();
+  private readonly maps: Record<MapId, MapData> = {
+    overworld: createOverworldMap(),
+    pocket: createPocketMap()
+  };
+  private map: MapData = this.maps.overworld;
   private readonly terrainBlocks: TerrainBlockInstance[] = [];
   private readonly terrainBlockColumns = new Map<string, TerrainBlockInstance[]>();
   private readonly terrainChunks: TerrainChunkRender[] = [];
@@ -979,10 +1124,11 @@ export class ThreeIsoGame {
   private lastFrameTime = performance.now();
   private attackCooldownTimer = 0;
   private activeAttack: ActiveAttackState | null = null;
+  private teleportArmed = true;
 
   private readonly player: PlayerState = {
-    x: 12.5,
-    y: 12.5,
+    x: OVERWORLD_SPAWN.x,
+    y: OVERWORLD_SPAWN.y,
     z: DEFAULT_BLOCK_HEIGHT_SCALE,
     vx: 0,
     vy: 0,
@@ -1830,11 +1976,25 @@ export class ThreeIsoGame {
     );
   }
 
+  private getTeleportAtTile(tileX: number, tileY: number): TeleportTile | null {
+    return (
+      this.map.teleports.find((teleport) => teleport.x === tileX && teleport.y === tileY) ?? null
+    );
+  }
+
+  private isTeleportTile(tileX: number, tileY: number): boolean {
+    return this.getTeleportAtTile(tileX, tileY) !== null;
+  }
+
   private collectNpcSpawnCandidates(requireMobility: boolean): Vec2[] {
     const candidates: Vec2[] = [];
 
     for (let y = 1; y < this.map.height - 1; y += 1) {
       for (let x = 1; x < this.map.width - 1; x += 1) {
+        if (this.isTeleportTile(x, y)) {
+          continue;
+        }
+
         const dx = x + 0.5 - this.player.x;
         const dy = y + 0.5 - this.player.y;
         if (dx * dx + dy * dy < NPC_SPAWN_EXCLUSION_RADIUS * NPC_SPAWN_EXCLUSION_RADIUS) {
@@ -1861,11 +2021,16 @@ export class ThreeIsoGame {
     }
   }
 
+  private getMapSpawnSeedOffset(): number {
+    return this.map.id === 'overworld' ? 0 : 10000;
+  }
+
   private spawnNpcs(): void {
+    const spawnSeedOffset = this.getMapSpawnSeedOffset();
     const mobileCandidates = this.collectNpcSpawnCandidates(true);
     const stationaryCandidates = this.collectNpcSpawnCandidates(false);
-    this.shuffleSpawnCandidates(mobileCandidates, MAP_GENERATION_SEED + 601);
-    this.shuffleSpawnCandidates(stationaryCandidates, MAP_GENERATION_SEED + 907);
+    this.shuffleSpawnCandidates(mobileCandidates, MAP_GENERATION_SEED + spawnSeedOffset + 601);
+    this.shuffleSpawnCandidates(stationaryCandidates, MAP_GENERATION_SEED + spawnSeedOffset + 907);
 
     const createNpc = (
       kind: NpcState['kind'],
@@ -1925,6 +2090,10 @@ export class ThreeIsoGame {
       candidates: Vec2[],
       seedOffset: number
     ): void => {
+      if (count <= 0) {
+        return;
+      }
+
       let spawned = 0;
 
       for (const candidate of candidates) {
@@ -1935,7 +2104,13 @@ export class ThreeIsoGame {
 
         this.occupiedActorTiles.add(tileKey);
         this.npcs.push(
-          createNpc(kind, candidate.x, candidate.y, tintHex, MAP_GENERATION_SEED + seedOffset + this.npcs.length * 17)
+          createNpc(
+            kind,
+            candidate.x,
+            candidate.y,
+            tintHex,
+            MAP_GENERATION_SEED + spawnSeedOffset + seedOffset + this.npcs.length * 17
+          )
         );
         spawned += 1;
 
@@ -1945,14 +2120,25 @@ export class ThreeIsoGame {
       }
     };
 
-    addNpcs('mobile', MOBILE_NPC_COUNT, MOBILE_NPC_TINT, mobileCandidates, 1300);
-    addNpcs('stationary', STATIONARY_NPC_COUNT, STATIONARY_NPC_TINT, stationaryCandidates, 2100);
+    addNpcs('mobile', this.map.spawns.mobileNpcCount, MOBILE_NPC_TINT, mobileCandidates, 1300);
+    addNpcs(
+      'stationary',
+      this.map.spawns.stationaryNpcCount,
+      STATIONARY_NPC_TINT,
+      stationaryCandidates,
+      2100
+    );
   }
 
   private spawnFlowers(): void {
+    if (this.map.spawns.flowerCount <= 0) {
+      return;
+    }
+
+    const spawnSeedOffset = this.getMapSpawnSeedOffset();
     const candidates = this.collectNpcSpawnCandidates(false);
-    this.shuffleSpawnCandidates(candidates, MAP_GENERATION_SEED + 3001);
-    const random = createSeededRandom(MAP_GENERATION_SEED + 4103);
+    this.shuffleSpawnCandidates(candidates, MAP_GENERATION_SEED + spawnSeedOffset + 3001);
+    const random = createSeededRandom(MAP_GENERATION_SEED + spawnSeedOffset + 4103);
     let spawned = 0;
 
     for (const candidate of candidates) {
@@ -1998,10 +2184,82 @@ export class ThreeIsoGame {
       });
       spawned += 1;
 
-      if (spawned >= FLOWER_COUNT) {
+      if (spawned >= this.map.spawns.flowerCount) {
         break;
       }
     }
+  }
+
+  private clearMapActors(): void {
+    for (const npc of this.npcs) {
+      this.actorDepthGroup.remove(npc.depthProxy);
+      this.actorGroup.remove(npc.sprite);
+      this.actorGroup.remove(npc.shadow);
+      npc.spriteMaterial.dispose();
+    }
+
+    for (const flower of this.flowers) {
+      this.actorDepthGroup.remove(flower.depthProxy);
+      this.actorGroup.remove(flower.sprite);
+      this.actorGroup.remove(flower.shadow);
+      flower.spriteMaterial.dispose();
+    }
+
+    this.npcs.length = 0;
+    this.flowers.length = 0;
+    this.occupiedActorTiles.clear();
+  }
+
+  private loadMap(mapId: MapId, targetX: number, targetY: number): void {
+    this.map = this.maps[mapId];
+    this.clearMapActors();
+    this.activeAttack = null;
+    this.attackCooldownTimer = 0;
+    this.player.x = clamp(
+      targetX,
+      MAP_EDGE_PADDING + PLAYER_COLLISION_RADIUS,
+      this.map.width - MAP_EDGE_PADDING - PLAYER_COLLISION_RADIUS
+    );
+    this.player.y = clamp(
+      targetY,
+      MAP_EDGE_PADDING + PLAYER_COLLISION_RADIUS,
+      this.map.height - MAP_EDGE_PADDING - PLAYER_COLLISION_RADIUS
+    );
+    this.player.vx = 0;
+    this.player.vy = 0;
+    this.player.vz = 0;
+    this.player.grounded = true;
+    this.player.z = this.getSupportHeight(this.player.x, this.player.y);
+
+    this.buildTerrain();
+    this.spawnNpcs();
+    this.spawnFlowers();
+    this.refreshActorDepthProxyScales();
+    this.updateNpcActivity();
+    this.updateFlowerActivity();
+    this.updateNpcVisuals();
+    this.updateFlowerVisuals();
+    this.updatePlayerVisuals();
+    this.updateCamera(1 / 60, true);
+    this.updateHud();
+    this.teleportArmed = false;
+  }
+
+  private updateMapTeleport(): void {
+    const tileX = Math.floor(this.player.x);
+    const tileY = Math.floor(this.player.y);
+    const teleport = this.getTeleportAtTile(tileX, tileY);
+
+    if (!teleport) {
+      this.teleportArmed = true;
+      return;
+    }
+
+    if (!this.teleportArmed || !this.player.grounded) {
+      return;
+    }
+
+    this.loadMap(teleport.targetMapId, teleport.targetX, teleport.targetY);
   }
 
   private getTopBaseColor(materialKey: MaterialKey): Color {
@@ -2012,6 +2270,8 @@ export class ThreeIsoGame {
         return new Color('#64884c');
       case 'sand':
         return new Color('#cfb070');
+      case 'portal':
+        return new Color('#58d7ff');
       case 'stone':
         return new Color('#b3b6c1');
     }
@@ -2023,6 +2283,8 @@ export class ThreeIsoGame {
         return new Color('#fff0c8');
       case 'stone':
         return new Color('#f3f7ff');
+      case 'portal':
+        return new Color('#e1fbff');
       default:
         return new Color('#f2ffd8');
     }
@@ -3612,6 +3874,7 @@ export class ThreeIsoGame {
       this.player.grounded = true;
     }
 
+    this.updateMapTeleport();
     this.updateNpcActivity();
     this.updateNpcs(dt);
     this.updateNpcTouchFeedback();
@@ -4032,6 +4295,7 @@ export class ThreeIsoGame {
       `-Y=${getCompassDirection(basis.right.x - basis.top.x, basis.right.y - basis.top.y)}`;
 
     this.hudStatus.textContent =
+      `Map: ${this.map.id}\n` +
       `Position: ${this.player.x.toFixed(2)}, ${this.player.y.toFixed(2)}, ${this.player.z.toFixed(2)}\n` +
       `Ground: ${ground.toFixed(2)}  |  Vertical speed: ${this.player.vz.toFixed(2)}\n` +
       `State: ${this.player.grounded ? 'grounded' : 'airborne'}  |  View: ${viewName}-up (${this.viewRotation * 90} deg)\n` +
