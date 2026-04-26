@@ -209,6 +209,13 @@ interface OcclusionTuning {
   actorHeightPadding: number;
 }
 
+interface TerrainOcclusionActor {
+  x: number;
+  y: number;
+  footZ: number;
+  bodyHeight: number;
+}
+
 interface DragState {
   pointerId: number;
   lastX: number;
@@ -332,7 +339,7 @@ const ACTOR_SORT_RENDER_ORDER_BASE = 40;
 const ACTOR_SORT_RENDER_ORDER_SCALE = 100;
 const DEFAULT_ACTOR_SPRITE_CAMERA_BIAS = 0.03;
 const DEFAULT_ACTOR_DEPTH_PROXY_CAMERA_BIAS = 0.01;
-const NON_PLAYER_SPRITE_CAMERA_BIAS_MULTIPLIER = 6;
+const DEPTH_TESTED_SPRITE_CAMERA_BIAS_MULTIPLIER = 6;
 const ACTOR_SPRITE_WORLD_WIDTH = CHARACTER_SCALE * (CHARACTER_FRAME_WIDTH / CHARACTER_FRAME_HEIGHT);
 const DEFAULT_ACTOR_DEPTH_PROXY_WIDTH_FACTOR = 0.72;
 const DEFAULT_ACTOR_DEPTH_PROXY_HEIGHT_FACTOR = 0.92;
@@ -845,6 +852,7 @@ export class ThreeIsoGame {
   private readonly input = new InputController();
   private readonly map = createExampleMap();
   private readonly terrainBlocks: TerrainBlockInstance[] = [];
+  private readonly terrainBlockColumns = new Map<string, TerrainBlockInstance[]>();
   private readonly terrainChunks: TerrainChunkRender[] = [];
   private readonly frameTextures: CanvasTexture[][];
   private readonly flowerFrameTextures: CanvasTexture[];
@@ -1053,7 +1061,11 @@ export class ThreeIsoGame {
 
     this.buildTerrain();
 
-    this.spriteMaterial = this.createActorSpriteMaterial(this.frameTextures[this.currentDirection][1]);
+    this.spriteMaterial = this.createActorSpriteMaterial(
+      this.frameTextures[this.currentDirection][1],
+      '#ffffff',
+      true
+    );
     this.playerSprite = this.createActorSprite(this.spriteMaterial);
     this.playerDepthProxy = this.createActorDepthProxy(this.playerDepthProxyGeometry);
     this.actorDepthGroup.add(this.playerDepthProxy);
@@ -1565,6 +1577,21 @@ export class ThreeIsoGame {
     }
 
     return chunk.frontSideMesh;
+  }
+
+  private getTerrainBlockColumnKey(x: number, y: number): string {
+    return `${x}:${y}`;
+  }
+
+  private addTerrainBlockToColumn(block: TerrainBlockInstance): void {
+    const key = this.getTerrainBlockColumnKey(block.x, block.y);
+    const column = this.terrainBlockColumns.get(key);
+
+    if (column) {
+      column.push(block);
+    } else {
+      this.terrainBlockColumns.set(key, [block]);
+    }
   }
 
   private setTerrainBlockFrontState(block: TerrainBlockInstance, renderInFront: boolean): void {
@@ -2513,6 +2540,7 @@ export class ThreeIsoGame {
   private buildTerrain(): void {
     this.terrainGroup.clear();
     this.terrainBlocks.length = 0;
+    this.terrainBlockColumns.clear();
     this.terrainChunks.length = 0;
     const chunkBlockMap = new Map<string, TerrainChunkBuildData>();
 
@@ -2809,6 +2837,7 @@ export class ThreeIsoGame {
         }
 
         this.terrainBlocks.push(block);
+        this.addTerrainBlockToColumn(block);
       });
 
       if (chunk.frontTopMesh) {
@@ -2929,23 +2958,101 @@ export class ThreeIsoGame {
     return overlapsActorLane && isFrontFacing && risesAboveFeet && intersectsActorHeight;
   }
 
+  private getTerrainOcclusionSearchRadius(): number {
+    const { lateralRange, frontMin, frontMax } = this.occlusionTuning;
+    const lateralLimit = lateralRange + 2.5;
+    const frontLimit = Math.max(Math.abs(frontMin - 2.5), Math.abs(frontMax + 3.5));
+    return Math.ceil((lateralLimit + frontLimit) * Math.SQRT1_2 + 2);
+  }
+
+  private markTerrainOccludersForActor(
+    actor: TerrainOcclusionActor,
+    basis: ScreenBasis,
+    frontBlocks: Set<TerrainBlockInstance>
+  ): void {
+    const searchRadius = this.getTerrainOcclusionSearchRadius();
+    const minTileX = Math.max(0, Math.floor(actor.x) - searchRadius);
+    const maxTileX = Math.min(this.map.width - 1, Math.floor(actor.x) + searchRadius);
+    const minTileY = Math.max(0, Math.floor(actor.y) - searchRadius);
+    const maxTileY = Math.min(this.map.height - 1, Math.floor(actor.y) + searchRadius);
+
+    for (let tileY = minTileY; tileY <= maxTileY; tileY += 1) {
+      for (let tileX = minTileX; tileX <= maxTileX; tileX += 1) {
+        const column = this.terrainBlockColumns.get(this.getTerrainBlockColumnKey(tileX, tileY));
+
+        if (!column) {
+          continue;
+        }
+
+        for (const block of column) {
+          if (
+            this.shouldTerrainBlockRenderInFrontOfActor(
+              block,
+              actor.x,
+              actor.y,
+              actor.footZ,
+              actor.bodyHeight,
+              basis
+            )
+          ) {
+            frontBlocks.add(block);
+          }
+        }
+      }
+    }
+  }
+
   private updateTerrainOcclusion(): void {
     const basis = this.getPlaneBasis();
-    const actorFootX = this.player.x;
-    const actorFootY = this.player.y;
-    const actorFootZ = this.player.z / this.blockHeightScale;
-    const actorBodyHeight = PLAYER_BODY_HEIGHT / this.blockHeightScale;
+    const frontBlocks = new Set<TerrainBlockInstance>();
+
+    this.markTerrainOccludersForActor(
+      {
+        x: this.player.x,
+        y: this.player.y,
+        footZ: this.player.z / this.blockHeightScale,
+        bodyHeight: PLAYER_BODY_HEIGHT / this.blockHeightScale
+      },
+      basis,
+      frontBlocks
+    );
+
+    for (const npc of this.npcs) {
+      if (!npc.active) {
+        continue;
+      }
+
+      this.markTerrainOccludersForActor(
+        {
+          x: npc.x,
+          y: npc.y,
+          footZ: npc.z / this.blockHeightScale,
+          bodyHeight: NPC_BODY_HEIGHT / this.blockHeightScale
+        },
+        basis,
+        frontBlocks
+      );
+    }
+
+    for (const flower of this.flowers) {
+      if (!flower.active) {
+        continue;
+      }
+
+      this.markTerrainOccludersForActor(
+        {
+          x: flower.x,
+          y: flower.y,
+          footZ: flower.z / this.blockHeightScale,
+          bodyHeight: FLOWER_BODY_HEIGHT / this.blockHeightScale
+        },
+        basis,
+        frontBlocks
+      );
+    }
 
     for (const block of this.terrainBlocks) {
-      const shouldRenderInFront = this.shouldTerrainBlockRenderInFrontOfActor(
-        block,
-        actorFootX,
-        actorFootY,
-        actorFootZ,
-        actorBodyHeight,
-        basis
-      );
-      this.setTerrainBlockFrontState(block, shouldRenderInFront);
+      this.setTerrainBlockFrontState(block, frontBlocks.has(block));
     }
   }
 
@@ -3736,7 +3843,8 @@ export class ThreeIsoGame {
       this.playerSprite,
       this.player.x,
       this.player.z,
-      this.player.y
+      this.player.y,
+      DEPTH_TESTED_SPRITE_CAMERA_BIAS_MULTIPLIER
     );
     const playerRenderOrder = this.getActorRenderOrder(
       this.player.x,
@@ -3795,7 +3903,7 @@ export class ThreeIsoGame {
         npc.x,
         npc.z,
         npc.y,
-        NON_PLAYER_SPRITE_CAMERA_BIAS_MULTIPLIER
+        DEPTH_TESTED_SPRITE_CAMERA_BIAS_MULTIPLIER
       );
       const npcRenderOrder = this.getActorRenderOrder(npc.x, npc.y, npc.z, 1);
       npc.sprite.renderOrder = npcRenderOrder;
@@ -3842,7 +3950,7 @@ export class ThreeIsoGame {
         flower.x,
         flower.z,
         flower.y,
-        NON_PLAYER_SPRITE_CAMERA_BIAS_MULTIPLIER
+        DEPTH_TESTED_SPRITE_CAMERA_BIAS_MULTIPLIER
       );
       const flowerRenderOrder = this.getActorRenderOrder(flower.x, flower.y, flower.z, 1);
       flower.sprite.renderOrder = flowerRenderOrder;
