@@ -338,6 +338,24 @@ interface TeleportTransitionState {
   targetY: number;
 }
 
+interface ScreenFlashState {
+  delay: number;
+  duration: number;
+  elapsed: number;
+  maxOpacity: number;
+}
+
+type ScreenShakeEnvelope = (progress: number) => number;
+
+interface ScreenShakeState {
+  duration: number;
+  elapsed: number;
+  strength: number;
+  frequency: number;
+  seed: number;
+  envelope: ScreenShakeEnvelope;
+}
+
 interface LightingDebugState {
   ambientIntensity: number;
   sunIntensity: number;
@@ -387,6 +405,12 @@ const PLAYER_COLLISION_RADIUS = 0.2;
 const NPC_COLLISION_RADIUS = 0.18;
 const WALK_FRAME_TIME = 0.12;
 const TELEPORT_FADE_DURATION = 0.25;
+const TELEPORT_FLASH_DELAY = 0;
+const TELEPORT_FLASH_DURATION = 0.65;
+const TELEPORT_FLASH_OPACITY = 0.82;
+const WORLDSMITH_SHAKE_DURATION = 0.82;
+const WORLDSMITH_SHAKE_STRENGTH = 0.56;
+const DEFAULT_SCREEN_SHAKE_FREQUENCY = 28;
 const DEFAULT_ACTOR_LABEL_RADIUS = 6.5;
 const DEFAULT_ACTOR_LABEL_FONT_SIZE = 24;
 const PLAYER_BODY_HEIGHT = 1.2;
@@ -601,6 +625,15 @@ const approach = (value: number, target: number, delta: number): number => {
 const lerp = (start: number, end: number, t: number): number => start + (end - start) * t;
 
 const length = (x: number, y: number): number => Math.hypot(x, y);
+
+const easeInOut = (progress: number): number =>
+  0.5 - Math.cos(clamp(progress, 0, 1) * Math.PI) * 0.5;
+
+const screenShakeFalloffEnvelope: ScreenShakeEnvelope = (progress) =>
+  Math.pow(1 - clamp(progress, 0, 1), 2);
+
+const screenShakeEaseInOutEnvelope: ScreenShakeEnvelope = (progress) =>
+  Math.sin(easeInOut(progress) * Math.PI);
 
 const getMoveKeyScreenDirection = (code: string): Vec2 | null => {
   switch (code) {
@@ -1298,36 +1331,11 @@ function createOverworldMap(
     }
   }
 
-  const pathStartX = Math.min(15, teleportTile.x);
-  const pathEndX = Math.max(15, teleportTile.x);
-  for (let x = pathStartX; x <= pathEndX; x += 1) {
-    for (let y = teleportTile.y - 1; y <= teleportTile.y + 1; y += 1) {
-      setColumn(
-        map,
-        x,
-        y,
-        spawnHeight,
-        buildColumnMaterials(seed, x, y, spawnHeight, 0.5, 0.58, 0.32, dominantMaterial)
-      );
-    }
-  }
-
-  for (let y = teleportTile.y - 2; y <= teleportTile.y + 2; y += 1) {
-    for (let x = teleportTile.x - 2; x <= teleportTile.x + 2; x += 1) {
-      setColumn(
-        map,
-        x,
-        y,
-        spawnHeight,
-        buildColumnMaterials(seed, x, y, spawnHeight, 0.5, 0.58, 0.32, dominantMaterial)
-      );
-    }
-  }
-
-  setColumn(map, teleportTile.x, teleportTile.y, spawnHeight, [
-    'stone',
+  const teleportCell = getCell(map, teleportTile.x, teleportTile.y);
+  teleportCell.materials = [
+    ...teleportCell.materials.slice(0, -1),
     'portal'
-  ]);
+  ];
 
   return map;
 }
@@ -1507,6 +1515,7 @@ export class ThreeIsoGame {
   private readonly actorDepthGroup = new Group();
   private readonly actorGroup = new Group();
   private readonly actorLabelLayer = document.createElement('div');
+  private readonly screenFlashLayer = document.createElement('div');
   private readonly input = new InputController();
   private currentOverworldSeed = MAP_GENERATION_SEED;
   private currentOverworldTeleportTile: Vec2 = { ...OVERWORLD_TELEPORT_TILE };
@@ -1615,6 +1624,10 @@ export class ThreeIsoGame {
   private readonly reusableTerrainQuaternion = new Quaternion();
   private readonly reusableTerrainAxisY = new Vector3(0, 1, 0);
   private readonly reusableCameraDirection = new Vector3();
+  private readonly cameraShakeOffset = new Vector3();
+  private readonly cameraShakeWorldRight = new Vector3();
+  private readonly cameraShakeWorldUp = new Vector3();
+  private readonly cameraShakeFocus = new Vector3();
   private readonly cameraFocus = new Vector3();
   private readonly cameraDesiredFocus = new Vector3();
   private readonly screenVelocity = new Vector2();
@@ -1658,6 +1671,8 @@ export class ThreeIsoGame {
   private activeAttack: ActiveAttackState | null = null;
   private teleportArmed = true;
   private teleportTransition: TeleportTransitionState | null = null;
+  private screenFlash: ScreenFlashState | null = null;
+  private screenShake: ScreenShakeState | null = null;
   private playerOpacity = 1;
 
   private readonly player: PlayerState = {
@@ -1714,6 +1729,8 @@ export class ThreeIsoGame {
     this.root.prepend(this.renderer.domElement);
     this.actorLabelLayer.className = 'actor-label-layer';
     this.root.appendChild(this.actorLabelLayer);
+    this.screenFlashLayer.className = 'screen-flash';
+    this.root.appendChild(this.screenFlashLayer);
 
     this.scene.background = new Color('#111821');
     this.hiddenTerrainMatrix.makeScale(
@@ -3044,8 +3061,83 @@ export class ThreeIsoGame {
     this.shadowMesh.visible = visible;
   }
 
+  private playScreenFlash(color: string, duration: number, maxOpacity = 1, delay = 0): void {
+    const clampedDuration = Math.max(duration, 0.01);
+
+    this.screenFlash = {
+      delay: Math.max(0, delay),
+      duration: clampedDuration,
+      elapsed: 0,
+      maxOpacity: clamp(maxOpacity, 0, 1)
+    };
+    this.screenFlashLayer.style.background = color;
+    this.screenFlashLayer.style.opacity = this.screenFlash.delay > 0
+      ? '0'
+      : this.screenFlash.maxOpacity.toFixed(3);
+  }
+
+  private playScreenShake(
+    strength: number,
+    duration: number,
+    frequency = DEFAULT_SCREEN_SHAKE_FREQUENCY,
+    envelope = screenShakeFalloffEnvelope
+  ): void {
+    const clampedStrength = Math.max(0, strength);
+    const clampedDuration = Math.max(0, duration);
+
+    if (clampedStrength === 0 || clampedDuration === 0) {
+      this.screenShake = null;
+      return;
+    }
+
+    this.screenShake = {
+      duration: clampedDuration,
+      elapsed: 0,
+      strength: clampedStrength,
+      frequency: Math.max(1, frequency),
+      seed: Math.random() * Math.PI * 2,
+      envelope
+    };
+  }
+
+  private updateScreenEffects(dt: number): void {
+    if (this.screenFlash) {
+      this.screenFlash.elapsed = Math.min(
+        this.screenFlash.delay + this.screenFlash.duration,
+        this.screenFlash.elapsed + dt
+      );
+      const activeTime = Math.max(0, this.screenFlash.elapsed - this.screenFlash.delay);
+      const progress = activeTime / this.screenFlash.duration;
+      const easedProgress = 0.5 - Math.cos(progress * Math.PI) * 0.5;
+      const opacity = this.screenFlash.maxOpacity * Math.sin(easedProgress * Math.PI);
+      this.screenFlashLayer.style.opacity = opacity.toFixed(3);
+
+      if (this.screenFlash.elapsed >= this.screenFlash.delay + this.screenFlash.duration) {
+        this.screenFlash = null;
+        this.screenFlashLayer.style.opacity = '0';
+      }
+    }
+
+    if (this.screenShake) {
+      this.screenShake.elapsed = Math.min(
+        this.screenShake.duration,
+        this.screenShake.elapsed + dt
+      );
+
+      if (this.screenShake.elapsed >= this.screenShake.duration) {
+        this.screenShake = null;
+      }
+    }
+  }
+
   private startTeleportTransition(teleport: TeleportTile): void {
     this.teleportArmed = false;
+    this.playScreenFlash(
+      '#ffffff',
+      TELEPORT_FLASH_DURATION,
+      TELEPORT_FLASH_OPACITY,
+      TELEPORT_FLASH_DELAY
+    );
     this.teleportTransition = {
       phase: 'fadeOut',
       timer: 0,
@@ -4494,6 +4586,12 @@ export class ThreeIsoGame {
   private handleActorHitInteraction(interaction: ActorHitInteraction | null): void {
     switch (interaction) {
       case 'regenerateOverworld':
+        this.playScreenShake(
+          WORLDSMITH_SHAKE_STRENGTH,
+          WORLDSMITH_SHAKE_DURATION,
+          DEFAULT_SCREEN_SHAKE_FREQUENCY,
+          screenShakeEaseInOutEnvelope
+        );
         this.regenerateOverworld();
         return;
       default:
@@ -4777,6 +4875,7 @@ export class ThreeIsoGame {
     this.updateTriggers(dt);
     this.updateTriggerTouchFeedback();
     this.updateActiveAttack(dt);
+    this.updateScreenEffects(dt);
     this.updatePlayerAnimation(dt);
     this.updatePlayerVisuals();
     this.updateNpcVisuals();
@@ -5284,6 +5383,48 @@ export class ThreeIsoGame {
     label.style.fontSize = `${(this.actorLabelFontSize * fontSizeFactor).toFixed(1)}px`;
   }
 
+  private getScreenShakeOffset(): Vector3 {
+    this.cameraShakeOffset.set(0, 0, 0);
+
+    if (!this.screenShake) {
+      return this.cameraShakeOffset;
+    }
+
+    const progress = this.screenShake.elapsed / this.screenShake.duration;
+    const envelope = clamp(this.screenShake.envelope(progress), 0, 1);
+    const pulse = this.screenShake.elapsed * this.screenShake.frequency * Math.PI * 2;
+    const x =
+      (Math.sin(pulse + this.screenShake.seed) +
+        Math.sin(pulse * 1.73 + this.screenShake.seed * 0.61) * 0.45) /
+      1.45;
+    const y =
+      (Math.cos(pulse * 1.27 + this.screenShake.seed * 1.31) +
+        Math.sin(pulse * 2.11 + this.screenShake.seed * 1.9) * 0.35) /
+      1.35;
+    const magnitude = this.screenShake.strength * envelope;
+
+    this.cameraShakeWorldRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    this.cameraShakeWorldUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    this.cameraShakeOffset
+      .copy(this.cameraShakeWorldRight)
+      .multiplyScalar(x * magnitude)
+      .addScaledVector(this.cameraShakeWorldUp, y * magnitude);
+
+    return this.cameraShakeOffset;
+  }
+
+  private applyScreenShakeToCamera(): void {
+    const shakeOffset = this.getScreenShakeOffset();
+
+    if (shakeOffset.lengthSq() === 0) {
+      return;
+    }
+
+    this.camera.position.add(shakeOffset);
+    this.cameraShakeFocus.copy(this.cameraFocus).add(shakeOffset);
+    this.camera.lookAt(this.cameraShakeFocus);
+  }
+
   private updateCamera(dt: number, snap: boolean): void {
     this.cameraDesiredFocus.set(
       this.player.x,
@@ -5307,9 +5448,10 @@ export class ThreeIsoGame {
       Math.sin(this.cameraYaw) * horizontalDistance
     );
 
+    this.camera.up.set(0, 1, 0);
     this.camera.position.copy(this.cameraFocus).add(offset);
     this.camera.lookAt(this.cameraFocus);
-    this.camera.up.set(0, 1, 0);
+    this.applyScreenShakeToCamera();
     this.camera.updateProjectionMatrix();
     this.updateShadowRig();
   }
