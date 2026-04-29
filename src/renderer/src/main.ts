@@ -111,6 +111,19 @@ lightingPanel.innerHTML = `
     <input id="attack-hurtbox-toggle" type="checkbox" />
     <span>Display Hurtbox</span>
   </label>
+  <label class="debug-toggle">
+    <input id="trigger-hitbox-toggle" type="checkbox" />
+    <span>Display Trigger Hitboxes</span>
+  </label>
+  <h2>Actor Labels Debug</h2>
+  <label class="debug-control">
+    <span>Label Radius <output id="label-radius-value"></output></span>
+    <input id="label-radius-slider" type="range" min="0" max="24" step="0.5" />
+  </label>
+  <label class="debug-control">
+    <span>Label Font <output id="label-font-value"></output></span>
+    <input id="label-font-slider" type="range" min="8" max="48" step="1" />
+  </label>
 `;
 root.appendChild(lightingPanel);
 
@@ -161,6 +174,9 @@ const proxyHeightSlider = lightingPanel.querySelector<HTMLInputElement>('#proxy-
 const spriteBiasSlider = lightingPanel.querySelector<HTMLInputElement>('#sprite-bias-slider');
 const proxyBiasSlider = lightingPanel.querySelector<HTMLInputElement>('#proxy-bias-slider');
 const attackHurtboxToggle = lightingPanel.querySelector<HTMLInputElement>('#attack-hurtbox-toggle');
+const triggerHitboxToggle = lightingPanel.querySelector<HTMLInputElement>('#trigger-hitbox-toggle');
+const labelRadiusSlider = lightingPanel.querySelector<HTMLInputElement>('#label-radius-slider');
+const labelFontSlider = lightingPanel.querySelector<HTMLInputElement>('#label-font-slider');
 const ambientValue = lightingPanel.querySelector<HTMLOutputElement>('#ambient-value');
 const sunValue = lightingPanel.querySelector<HTMLOutputElement>('#sun-value');
 const sunAngleValue = lightingPanel.querySelector<HTMLOutputElement>('#sun-angle-value');
@@ -173,6 +189,8 @@ const proxyWidthValue = lightingPanel.querySelector<HTMLOutputElement>('#proxy-w
 const proxyHeightValue = lightingPanel.querySelector<HTMLOutputElement>('#proxy-height-value');
 const spriteBiasValue = lightingPanel.querySelector<HTMLOutputElement>('#sprite-bias-value');
 const proxyBiasValue = lightingPanel.querySelector<HTMLOutputElement>('#proxy-bias-value');
+const labelRadiusValue = lightingPanel.querySelector<HTMLOutputElement>('#label-radius-value');
+const labelFontValue = lightingPanel.querySelector<HTMLOutputElement>('#label-font-value');
 
 if (
   !ambientSlider ||
@@ -190,6 +208,9 @@ if (
   !spriteBiasSlider ||
   !proxyBiasSlider ||
   !attackHurtboxToggle ||
+  !triggerHitboxToggle ||
+  !labelRadiusSlider ||
+  !labelFontSlider ||
   !ambientValue ||
   !sunValue ||
   !sunAngleValue ||
@@ -201,7 +222,9 @@ if (
   !proxyWidthValue ||
   !proxyHeightValue ||
   !spriteBiasValue ||
-  !proxyBiasValue
+  !proxyBiasValue ||
+  !labelRadiusValue ||
+  !labelFontValue
 ) {
   throw new Error('Expected lighting debug controls.');
 }
@@ -237,6 +260,13 @@ const syncLightingUi = (): void => {
   spriteBiasValue.textContent = actorOcclusion.spriteCameraBias.toFixed(3);
   proxyBiasValue.textContent = actorOcclusion.proxyCameraBias.toFixed(3);
   attackHurtboxToggle.checked = actorOcclusion.showAttackHurtbox;
+  triggerHitboxToggle.checked = actorOcclusion.showTriggerHitboxes;
+
+  const actorLabels = game.getDebugActorLabels();
+  labelRadiusSlider.value = actorLabels.radius.toFixed(1);
+  labelFontSlider.value = actorLabels.fontSize.toFixed(0);
+  labelRadiusValue.textContent = actorLabels.radius.toFixed(1);
+  labelFontValue.textContent = `${actorLabels.fontSize.toFixed(0)}px`;
 };
 
 ambientSlider.addEventListener('input', () => {
@@ -311,6 +341,21 @@ proxyBiasSlider.addEventListener('input', () => {
 
 attackHurtboxToggle.addEventListener('change', () => {
   game.setDebugShowAttackHurtbox(attackHurtboxToggle.checked);
+  syncLightingUi();
+});
+
+triggerHitboxToggle.addEventListener('change', () => {
+  game.setDebugShowTriggerHitboxes(triggerHitboxToggle.checked);
+  syncLightingUi();
+});
+
+labelRadiusSlider.addEventListener('input', () => {
+  game.setDebugActorLabelRadius(Number(labelRadiusSlider.value));
+  syncLightingUi();
+});
+
+labelFontSlider.addEventListener('input', () => {
+  game.setDebugActorLabelFontSize(Number(labelFontSlider.value));
   syncLightingUi();
 });
 

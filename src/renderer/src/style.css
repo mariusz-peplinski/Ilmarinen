@@ -40,10 +40,40 @@ canvas {
   inset: 0;
 }
 
+.actor-label-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.actor-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  max-width: min(520px, calc(100vw - 48px));
+  padding: 3px 7px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.31);
+  color: #ffffff;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: center;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.7);
+  white-space: normal;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  will-change: transform;
+}
+
 .hud {
   position: absolute;
   top: 20px;
   left: 20px;
+  z-index: 3;
   width: min(360px, calc(100vw - 40px));
   padding: 14px 16px;
   border: 1px solid var(--panel-border);
@@ -84,6 +114,7 @@ canvas {
   position: absolute;
   right: 28px;
   top: 24px;
+  z-index: 3;
   width: 96px;
   height: 96px;
   pointer-events: none;
@@ -146,6 +177,7 @@ canvas {
   position: absolute;
   left: 20px;
   bottom: 20px;
+  z-index: 3;
   min-width: 88px;
   padding: 8px 10px;
   border: 1px solid var(--panel-border);
@@ -164,7 +196,10 @@ canvas {
   position: absolute;
   right: 20px;
   bottom: 20px;
+  z-index: 3;
   width: min(270px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  overflow: auto;
   padding: 12px 14px;
   border: 1px solid var(--panel-border);
   border-radius: 2px;

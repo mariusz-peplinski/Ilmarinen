@@ -5,6 +5,8 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "editor": "ISOGAME_TOOL=editor electron-vite dev",
+    "dev:editor": "ISOGAME_TOOL=editor electron-vite dev",
     "build": "electron-vite build",
     "dist": "npm run build && electron-builder",
     "typecheck": "tsc --noEmit"

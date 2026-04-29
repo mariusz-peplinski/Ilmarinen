@@ -14,20 +14,31 @@ Desktop isometric action prototype built with Electron, Vite, TypeScript, and Th
 
 ## Current Runtime
 
-- Terrain is generated on startup from layered noise over a `168x144` map.
-- Heights are terraced and currently range from `1` to `6`.
+- The main overworld is generated from layered noise over a `168x144` map.
+- The first startup overworld keeps the default fixed-seed profile; regenerated overworlds derive seed-stable world factors for actor population, dominant block type, terrain noise scale, and terrain relief.
+- Regenerated terrain can be broad, balanced, or tight in noise scale, with low, rolling, or sharp relief. Heights are terraced and currently range from `1` to `7` depending on relief.
+- Dominant block type is strongly biased per regenerated world across grass, stone, sand, or moss.
 - Tile columns can mix materials per vertical layer.
 - Opaque terrain is rendered from chunked merged meshes; the nearby front-occlusion layer is still a separate dynamic pass.
+- A small hub world links back to the current overworld. Hitting the Worldsmith generates a new overworld seed, teleport tile, and world-factor profile.
 - The player uses a billboard sprite, logical tile-height collision, variable jump height, and a local terrain-occlusion pass.
-- NPCs are split into a small wandering group and a larger stationary group.
-- Flower props are randomly sprinkled around the map from `Flowers/Flowers_With_Outline_Spritesheet.png`.
-- NPCs and flowers can be touched and attacked; attacks currently use a visible debug hurtbox and simple knockback.
-- NPC, flower, and other non-player actor processing is gated by an alive radius around the player.
-- The renderer includes a HUD, compass, FPS counter, and debug controls for lighting, shadows, terrain readability, actor-occlusion tuning, and hurtbox visibility.
+- NPCs use `characters.png` and include mobile, stationary, and sturdy variants. Regenerated overworlds can spawn flowers only, humans only, or both.
+- Flower props use `Flowers/Flowers_With_Outline_Spritesheet.png` and are treated as billboard actors.
+- NPCs, flowers, and triggers can show proximity labels. NPCs and flowers flash on touch or attack; attacks currently use a debug hurtbox, simple knockback, and per-target single-hit tracking.
+- NPC, flower, trigger, and other non-player actor processing is gated by an alive radius around the player.
+- The renderer includes a HUD, compass, FPS counter, and debug controls for lighting, shadows, terrain readability, actor-occlusion tuning, actor labels, trigger hitboxes, and hurtbox visibility.
+
+## Map Editor
+
+- `npm run editor` or `npm run dev:editor`: launch the Electron map editor instead of the game.
+- The editor supports tile/material painting, height edits, teleport/object placement, local save, JSON import/export, and file import.
+- The editor is a canvas-based tool path under `src/renderer/editor.html`, `src/renderer/src/editor.ts`, and `src/renderer/src/editor.css`.
 
 ## Scripts
 
 - `npm run dev`: launch the desktop game in development mode
+- `npm run editor`: launch the map editor in development mode
+- `npm run dev:editor`: alias for `npm run editor`
 - `npm run typecheck`: run TypeScript checks without emitting files
 - `npm run build`: build the application bundles
 - `npm run dist`: build a packaged desktop artifact

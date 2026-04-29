@@ -29,7 +29,34 @@ import {
 } from 'three';
 
 type MaterialKey = 'grass' | 'stone' | 'sand' | 'moss' | 'portal';
-type MapId = 'overworld' | 'pocket';
+type TerrainMaterialKey = Exclude<MaterialKey, 'portal'>;
+type MapId = 'overworld' | 'hubWorld';
+type ActorPopulationFactor = 'flowers' | 'humans' | 'mixed';
+
+interface TerrainScaleFactor {
+  label: string;
+  elevationFrequency: number;
+  detailFrequency: number;
+  moistureFrequency: number;
+  roughnessFrequency: number;
+  ridgeFrequency: number;
+  ridgeMaskFrequency: number;
+}
+
+interface TerrainReliefFactor {
+  label: string;
+  basePower: number;
+  baseWeight: number;
+  ridgeStrength: number;
+  maxHeight: number;
+}
+
+interface WorldGenerationFactors {
+  actorPopulation: ActorPopulationFactor;
+  dominantMaterial: TerrainMaterialKey;
+  terrainScale: TerrainScaleFactor;
+  terrainRelief: TerrainReliefFactor;
+}
 
 interface Cell {
   height: number;
@@ -47,6 +74,9 @@ interface TeleportTile {
 interface MapSpawnConfig {
   mobileNpcCount: number;
   stationaryNpcCount: number;
+  sturdyNpcCount: number;
+  fixedSturdyNpcs: FixedSturdyNpcSpawnConfig[];
+  fixedTriggers: TriggerSpawnConfig[];
   flowerCount: number;
 }
 
@@ -57,6 +87,7 @@ interface MapData {
   cells: Cell[];
   teleports: TeleportTile[];
   spawns: MapSpawnConfig;
+  generationFactors: WorldGenerationFactors | null;
 }
 
 interface Vec2 {
@@ -81,9 +112,20 @@ interface PlayerState {
   grounded: boolean;
 }
 
+type NpcKind = 'mobile' | 'stationary' | 'sturdy';
+type ActorHitInteraction = 'regenerateOverworld';
+type ActorPlainInteraction = 'inspect';
+
+interface FixedSturdyNpcSpawnConfig {
+  x: number;
+  y: number;
+  displayName?: string | null;
+  onHitInteraction?: ActorHitInteraction;
+}
+
 interface NpcState {
   id: string;
-  kind: 'mobile' | 'stationary';
+  kind: NpcKind;
   x: number;
   y: number;
   z: number;
@@ -101,6 +143,13 @@ interface NpcState {
   touchFlashTimer: number;
   attackFlashTimer: number;
   playerTouching: boolean;
+  knockbackable: boolean;
+  displayName: string | null;
+  labelRangeFactor: number;
+  labelFontSizeFactor: number;
+  onHitInteraction: ActorHitInteraction | null;
+  onPlainInteraction: ActorPlainInteraction | null;
+  labelElement: HTMLDivElement;
   baseTint: Color;
   spriteMaterial: SpriteMaterial;
   sprite: Sprite;
@@ -119,11 +168,49 @@ interface FlowerState {
   touchFlashTimer: number;
   attackFlashTimer: number;
   playerTouching: boolean;
+  displayName: string | null;
+  labelRangeFactor: number;
+  labelFontSizeFactor: number;
+  onHitInteraction: ActorHitInteraction | null;
+  onPlainInteraction: ActorPlainInteraction | null;
+  labelElement: HTMLDivElement;
   spriteMaterial: SpriteMaterial;
   sprite: Sprite;
   depthProxy: Mesh;
   shadow: Mesh;
   frameTexture: CanvasTexture;
+}
+
+interface TriggerSpawnConfig {
+  x: number;
+  y: number;
+  width: number;
+  depth: number;
+  height: number;
+  displayName: string | null;
+  labelRangeFactor?: number;
+  labelFontSizeFactor?: number;
+}
+
+interface TriggerState {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  width: number;
+  depth: number;
+  height: number;
+  active: boolean;
+  touchFlashTimer: number;
+  attackFlashTimer: number;
+  playerTouching: boolean;
+  displayName: string | null;
+  labelRangeFactor: number;
+  labelFontSizeFactor: number;
+  onHitInteraction: ActorHitInteraction | null;
+  onPlainInteraction: ActorPlainInteraction | null;
+  labelElement: HTMLDivElement;
+  debugMesh: Mesh;
 }
 
 type AttackInteractionKind = 'damage' | 'harvest' | 'smash';
@@ -139,6 +226,7 @@ interface AttackProfile {
   interactionKind: AttackInteractionKind;
   affectsNpcs: boolean;
   affectsFlowers: boolean;
+  affectsTriggers: boolean;
 }
 
 interface ActiveAttackState {
@@ -240,6 +328,16 @@ interface DragState {
   lastY: number;
 }
 
+type TeleportTransitionPhase = 'fadeOut' | 'fadeIn';
+
+interface TeleportTransitionState {
+  phase: TeleportTransitionPhase;
+  timer: number;
+  targetMapId: MapId;
+  targetX: number;
+  targetY: number;
+}
+
 interface LightingDebugState {
   ambientIntensity: number;
   sunIntensity: number;
@@ -259,6 +357,12 @@ interface ActorOcclusionDebugState {
   spriteCameraBias: number;
   proxyCameraBias: number;
   showAttackHurtbox: boolean;
+  showTriggerHitboxes: boolean;
+}
+
+interface ActorLabelDebugState {
+  radius: number;
+  fontSize: number;
 }
 
 const MAX_RUN_SPEED = 5.4;
@@ -282,6 +386,9 @@ const MAP_EDGE_PADDING = 0.02;
 const PLAYER_COLLISION_RADIUS = 0.2;
 const NPC_COLLISION_RADIUS = 0.18;
 const WALK_FRAME_TIME = 0.12;
+const TELEPORT_FADE_DURATION = 0.25;
+const DEFAULT_ACTOR_LABEL_RADIUS = 6.5;
+const DEFAULT_ACTOR_LABEL_FONT_SIZE = 24;
 const PLAYER_BODY_HEIGHT = 1.2;
 const OCCLUSION_HEIGHT_EPSILON = 0.01;
 const VIEW_NAMES = ['N', 'E', 'S', 'W'] as const;
@@ -292,12 +399,12 @@ const CHARACTER_SCALE = 1.35;
 const FRUSTUM_HEIGHT = 18;
 const MAP_WIDTH = 168;
 const MAP_HEIGHT = 144;
-const POCKET_MAP_WIDTH = 30;
-const POCKET_MAP_HEIGHT = 30;
+const HUB_WORLD_MAP_WIDTH = 30;
+const HUB_WORLD_MAP_HEIGHT = 30;
 const OVERWORLD_SPAWN: Vec2 = { x: 12.5, y: 12.5 };
 const OVERWORLD_TELEPORT_TILE: Vec2 = { x: 27, y: 12 };
-const POCKET_TELEPORT_TILE: Vec2 = { x: 15, y: 18 };
-const POCKET_SPAWN: Vec2 = { x: 15.5, y: 18.5 };
+const HUB_WORLD_TELEPORT_TILE: Vec2 = { x: 15, y: 18 };
+const HUB_WORLD_SPAWN: Vec2 = { x: 15.5, y: 18.5 };
 const CAMERA_NEAR = 0.01;
 const CAMERA_FAR = 300;
 const DEFAULT_CAMERA_DISTANCE = 25;
@@ -317,15 +424,101 @@ const HUD_UPDATE_INTERVAL = 1;
 const MAP_GENERATION_SEED = 0x51f15e;
 const DEFAULT_MOBILE_NPC_COUNT = 8;
 const DEFAULT_STATIONARY_NPC_COUNT = DEFAULT_MOBILE_NPC_COUNT * 4;
+const DEFAULT_STURDY_NPC_COUNT = 6;
 const DEFAULT_FLOWER_COUNT = 96;
+const TERRAIN_MATERIAL_KEYS: readonly TerrainMaterialKey[] = ['grass', 'stone', 'sand', 'moss'];
+const ACTOR_POPULATION_FACTORS: readonly ActorPopulationFactor[] = [
+  'flowers',
+  'humans',
+  'mixed'
+];
+const TERRAIN_SCALE_FACTORS: readonly TerrainScaleFactor[] = [
+  {
+    label: 'broad',
+    elevationFrequency: 0.034,
+    detailFrequency: 0.11,
+    moistureFrequency: 0.018,
+    roughnessFrequency: 0.045,
+    ridgeFrequency: 0.02,
+    ridgeMaskFrequency: 0.008
+  },
+  {
+    label: 'balanced',
+    elevationFrequency: 0.05,
+    detailFrequency: 0.16,
+    moistureFrequency: 0.026,
+    roughnessFrequency: 0.065,
+    ridgeFrequency: 0.028,
+    ridgeMaskFrequency: 0.012
+  },
+  {
+    label: 'tight',
+    elevationFrequency: 0.072,
+    detailFrequency: 0.22,
+    moistureFrequency: 0.036,
+    roughnessFrequency: 0.092,
+    ridgeFrequency: 0.04,
+    ridgeMaskFrequency: 0.017
+  }
+];
+const TERRAIN_RELIEF_FACTORS: readonly TerrainReliefFactor[] = [
+  {
+    label: 'low',
+    basePower: 1.35,
+    baseWeight: 0.86,
+    ridgeStrength: 1.2,
+    maxHeight: 4
+  },
+  {
+    label: 'rolling',
+    basePower: 1.6,
+    baseWeight: 0.76,
+    ridgeStrength: 2.2,
+    maxHeight: 6
+  },
+  {
+    label: 'sharp',
+    basePower: 1.85,
+    baseWeight: 0.66,
+    ridgeStrength: 3,
+    maxHeight: 7
+  }
+];
 const MOBILE_NPC_TINT = '#74a9ff';
 const STATIONARY_NPC_TINT = '#ff7979';
+const STURDY_NPC_TINT = '#777777';
 const NPC_TOUCH_FLASH_TINT = '#ffe66d';
 const NPC_TOUCH_FLASH_TIME = 0.18;
 const NPC_TOUCH_FLASH_COLOR = new Color(NPC_TOUCH_FLASH_TINT);
 const ATTACK_FLASH_TIME = 0.24;
 const ATTACK_FLASH_COLOR = new Color('#ff3b3b');
 const FLOWER_BASE_COLOR = new Color('#ffffff');
+const NPC_NAME_POOL = [
+  'Mira',
+  'Tovin',
+  'Pella',
+  'Niko',
+  'Sable',
+  'Jun',
+  'Orin',
+  'Luma',
+  'Brin',
+  'Vera',
+  'Kito',
+  'Marn'
+] as const;
+const STURDY_NPC_NAME_POOL = ['Anvil', 'Basalt', 'Granite', 'Slate', 'Kern', 'Obel'] as const;
+const FLOWER_NAME_POOL = [
+  'Aster',
+  'Briar',
+  'Clover',
+  'Dahlia',
+  'Iris',
+  'Marigold',
+  'Poppy',
+  'Rue'
+] as const;
+const HUB_SEED_LABEL_PREFIX = 'Overworld seed';
 const KNOCKBACK_DECAY = 10;
 const KNOCKBACK_STOP_SPEED = 0.08;
 const ACTOR_ALIVE_RADIUS = 28;
@@ -353,7 +546,8 @@ const DEFAULT_ATTACK_PROFILE: AttackProfile = {
   damage: 1,
   interactionKind: 'damage',
   affectsNpcs: true,
-  affectsFlowers: true
+  affectsFlowers: true,
+  affectsTriggers: true
 };
 const TERRAIN_CHUNK_SIZE = 16;
 const ACTOR_DEPTH_PROXY_RENDER_ORDER = -10;
@@ -408,6 +602,25 @@ const lerp = (start: number, end: number, t: number): number => start + (end - s
 
 const length = (x: number, y: number): number => Math.hypot(x, y);
 
+const getMoveKeyScreenDirection = (code: string): Vec2 | null => {
+  switch (code) {
+    case 'KeyW':
+    case 'ArrowUp':
+      return { x: 0, y: 1 };
+    case 'KeyS':
+    case 'ArrowDown':
+      return { x: 0, y: -1 };
+    case 'KeyA':
+    case 'ArrowLeft':
+      return { x: -1, y: 0 };
+    case 'KeyD':
+    case 'ArrowRight':
+      return { x: 1, y: 0 };
+    default:
+      return null;
+  }
+};
+
 const getCompassDirection = (x: number, y: number): string => {
   const angle = Math.atan2(y, x);
   const octant = ((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8;
@@ -416,6 +629,7 @@ const getCompassDirection = (x: number, y: number): string => {
 
 class InputController {
   private readonly keys = new Set<string>();
+  private readonly moveKeyPressOrder: string[] = [];
   private jumpQueued = false;
   private attackQueued = false;
   private rotateQueued = 0;
@@ -448,15 +662,29 @@ class InputController {
         this.attackQueued = true;
       }
 
+      if (getMoveKeyScreenDirection(event.code) && !event.repeat) {
+        const existingIndex = this.moveKeyPressOrder.indexOf(event.code);
+        if (existingIndex >= 0) {
+          this.moveKeyPressOrder.splice(existingIndex, 1);
+        }
+        this.moveKeyPressOrder.push(event.code);
+      }
+
       this.keys.add(event.code);
     });
 
     window.addEventListener('keyup', (event) => {
       this.keys.delete(event.code);
+
+      const existingIndex = this.moveKeyPressOrder.indexOf(event.code);
+      if (existingIndex >= 0) {
+        this.moveKeyPressOrder.splice(existingIndex, 1);
+      }
     });
 
     window.addEventListener('blur', () => {
       this.keys.clear();
+      this.moveKeyPressOrder.length = 0;
       this.jumpQueued = false;
       this.attackQueued = false;
       this.rotateQueued = 0;
@@ -491,6 +719,67 @@ class InputController {
     }
 
     return { x, y };
+  }
+
+  public getFacingScreenMoveVector(): Vec2 | null {
+    let x = 0;
+    let y = 0;
+
+    if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) {
+      y += 1;
+    }
+
+    if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) {
+      y -= 1;
+    }
+
+    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) {
+      x -= 1;
+    }
+
+    if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) {
+      x += 1;
+    }
+
+    if (
+      x === 0 &&
+      (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) &&
+      (this.keys.has('KeyD') || this.keys.has('ArrowRight'))
+    ) {
+      x = this.getLatestHeldAxisDirection('x');
+    }
+
+    if (
+      y === 0 &&
+      (this.keys.has('KeyW') || this.keys.has('ArrowUp')) &&
+      (this.keys.has('KeyS') || this.keys.has('ArrowDown'))
+    ) {
+      y = this.getLatestHeldAxisDirection('y');
+    }
+
+    const magnitude = length(x, y);
+    return magnitude > 0 ? { x: x / magnitude, y: y / magnitude } : null;
+  }
+
+  private getLatestHeldAxisDirection(axis: 'x' | 'y'): number {
+    for (let index = this.moveKeyPressOrder.length - 1; index >= 0; index -= 1) {
+      const code = this.moveKeyPressOrder[index];
+      if (!this.keys.has(code)) {
+        continue;
+      }
+
+      const direction = getMoveKeyScreenDirection(code);
+      if (!direction) {
+        continue;
+      }
+
+      const axisValue = axis === 'x' ? direction.x : direction.y;
+      if (axisValue !== 0) {
+        return axisValue;
+      }
+    }
+
+    return 0;
   }
 
   public consumeJump(): boolean {
@@ -581,6 +870,54 @@ function createSeededRandom(seed: number): () => number {
   };
 }
 
+function pickSeededValue<T>(items: readonly T[], random: () => number): T {
+  return items[Math.floor(random() * items.length)];
+}
+
+function createWorldGenerationFactors(seed: number): WorldGenerationFactors {
+  const random = createSeededRandom(seed ^ 0xa17cf3d5);
+
+  return {
+    actorPopulation: pickSeededValue(ACTOR_POPULATION_FACTORS, random),
+    dominantMaterial: pickSeededValue(TERRAIN_MATERIAL_KEYS, random),
+    terrainScale: pickSeededValue(TERRAIN_SCALE_FACTORS, random),
+    terrainRelief: pickSeededValue(TERRAIN_RELIEF_FACTORS, random)
+  };
+}
+
+function getSpawnConfigForActorPopulation(
+  actorPopulation: ActorPopulationFactor | null
+): Pick<MapSpawnConfig, 'mobileNpcCount' | 'stationaryNpcCount' | 'sturdyNpcCount' | 'flowerCount'> {
+  switch (actorPopulation) {
+    case 'flowers':
+      return {
+        mobileNpcCount: 0,
+        stationaryNpcCount: 0,
+        sturdyNpcCount: 0,
+        flowerCount: Math.round(DEFAULT_FLOWER_COUNT * 1.65)
+      };
+    case 'humans':
+      return {
+        mobileNpcCount: DEFAULT_MOBILE_NPC_COUNT + 3,
+        stationaryNpcCount: DEFAULT_STATIONARY_NPC_COUNT + 10,
+        sturdyNpcCount: DEFAULT_STURDY_NPC_COUNT + 2,
+        flowerCount: 0
+      };
+    case 'mixed':
+    default:
+      return {
+        mobileNpcCount: DEFAULT_MOBILE_NPC_COUNT,
+        stationaryNpcCount: DEFAULT_STATIONARY_NPC_COUNT,
+        sturdyNpcCount: DEFAULT_STURDY_NPC_COUNT,
+        flowerCount: DEFAULT_FLOWER_COUNT
+      };
+  }
+}
+
+function pickName(namePool: readonly string[], seed: number, x: number, y: number, z = 0): string {
+  return namePool[Math.floor(hashUnit(seed, x, y, z) * namePool.length)];
+}
+
 function gradientDot(seed: number, gridX: number, gridY: number, dx: number, dy: number): number {
   const angle = hashUnit(seed, gridX, gridY) * Math.PI * 2;
   return Math.cos(angle) * dx + Math.sin(angle) * dy;
@@ -643,6 +980,7 @@ function ridgedNoise2D(
 }
 
 function chooseWeightedMaterial(
+  seed: number,
   x: number,
   y: number,
   z: number,
@@ -650,7 +988,7 @@ function chooseWeightedMaterial(
 ): MaterialKey {
   const entries = Object.entries(weights) as [MaterialKey, number][];
   const totalWeight = entries.reduce((sum, [, weight]) => sum + Math.max(weight, 0), 0);
-  let pick = hashUnit(MAP_GENERATION_SEED + 401, x, y, z) * totalWeight;
+  let pick = hashUnit(seed + 401, x, y, z) * totalWeight;
 
   for (const [material, weight] of entries) {
     pick -= Math.max(weight, 0);
@@ -662,22 +1000,53 @@ function chooseWeightedMaterial(
   return entries[entries.length - 1]?.[0] ?? 'stone';
 }
 
+function biasWeightsTowardDominantMaterial(
+  weights: Partial<Record<MaterialKey, number>>,
+  dominantMaterial: TerrainMaterialKey | null,
+  bonusWeight: number
+): Partial<Record<MaterialKey, number>> {
+  if (!dominantMaterial) {
+    return weights;
+  }
+
+  const biasedWeights: Partial<Record<MaterialKey, number>> = {};
+
+  for (const material of TERRAIN_MATERIAL_KEYS) {
+    const weight = weights[material] ?? 0;
+    biasedWeights[material] = material === dominantMaterial ? weight + bonusWeight : weight * 0.25;
+  }
+
+  return biasedWeights;
+}
+
 function buildColumnMaterials(
+  seed: number,
   x: number,
   y: number,
   height: number,
   elevation: number,
   moisture: number,
-  roughness: number
+  roughness: number,
+  dominantMaterial: TerrainMaterialKey | null = null
 ): MaterialKey[] {
   const materials: MaterialKey[] = [];
   const isDryLowland = elevation < 0.42 && moisture < 0.48;
-  const topMaterial = chooseWeightedMaterial(x, y, height, {
-    sand: isDryLowland ? 3.6 : 0.5 + Math.max(0, 0.45 - moisture) * 1.7,
-    grass: 1.8 + moisture * 1.2 + Math.max(0, elevation - 0.4),
-    moss: 0.9 + moisture * 1.8 + roughness * 0.7,
-    stone: 0.45 + Math.max(0, elevation - 0.7) * 1.8 + roughness * 0.5
-  });
+  const topMaterial = chooseWeightedMaterial(
+    seed,
+    x,
+    y,
+    height,
+    biasWeightsTowardDominantMaterial(
+      {
+        sand: isDryLowland ? 3.6 : 0.5 + Math.max(0, 0.45 - moisture) * 1.7,
+        grass: 1.8 + moisture * 1.2 + Math.max(0, elevation - 0.4),
+        moss: 0.9 + moisture * 1.8 + roughness * 0.7,
+        stone: 0.45 + Math.max(0, elevation - 0.7) * 1.8 + roughness * 0.5
+      },
+      dominantMaterial,
+      18
+    )
+  );
 
   for (let z = 0; z < height; z += 1) {
     const depthFromTop = height - z - 1;
@@ -689,30 +1058,97 @@ function buildColumnMaterials(
 
     if (depthFromTop === 1) {
       materials.push(
-        chooseWeightedMaterial(x, y, z, {
-          sand: topMaterial === 'sand' ? 1.8 : 0.35,
-          grass: topMaterial === 'grass' ? 1.4 : 0.3,
-          moss: topMaterial === 'moss' ? 1.5 : 0.7 + moisture * 0.8,
-          stone: 1.8 + roughness * 0.9 + Math.max(0, elevation - 0.55)
-        })
+        chooseWeightedMaterial(
+          seed,
+          x,
+          y,
+          z,
+          biasWeightsTowardDominantMaterial(
+            {
+              sand: topMaterial === 'sand' ? 1.8 : 0.35,
+              grass: topMaterial === 'grass' ? 1.4 : 0.3,
+              moss: topMaterial === 'moss' ? 1.5 : 0.7 + moisture * 0.8,
+              stone: 1.8 + roughness * 0.9 + Math.max(0, elevation - 0.55)
+            },
+            dominantMaterial,
+            14
+          )
+        )
       );
       continue;
     }
 
     materials.push(
-      chooseWeightedMaterial(x, y, z, {
-        sand: isDryLowland ? 0.7 : 0.15,
-        grass: 0.1,
-        moss: 1 + moisture * 0.6,
-        stone: 3 + roughness * 1.4 + elevation
-      })
+      chooseWeightedMaterial(
+        seed,
+        x,
+        y,
+        z,
+        biasWeightsTowardDominantMaterial(
+          {
+            sand: isDryLowland ? 0.7 : 0.15,
+            grass: 0.1,
+            moss: 1 + moisture * 0.6,
+            stone: 3 + roughness * 1.4 + elevation
+          },
+          dominantMaterial,
+          12
+        )
+      )
     );
   }
 
   return materials;
 }
 
-function createOverworldMap(): MapData {
+function getOverworldSeedLabel(seed: number): string {
+  return `${HUB_SEED_LABEL_PREFIX}: ${seed.toString(16).padStart(8, '0')}`;
+}
+
+function getActorPopulationLabel(actorPopulation: ActorPopulationFactor): string {
+  switch (actorPopulation) {
+    case 'flowers':
+      return 'flowers';
+    case 'humans':
+      return 'humans';
+    case 'mixed':
+      return 'flowers + humans';
+  }
+}
+
+function getWorldGenerationFactorLabel(factors: WorldGenerationFactors | null): string {
+  if (!factors) {
+    return 'World factors: default startup profile';
+  }
+
+  return (
+    `World factors: ${getActorPopulationLabel(factors.actorPopulation)}, ` +
+    `${factors.dominantMaterial} blocks, ` +
+    `${factors.terrainScale.label} noise, ` +
+    `${factors.terrainRelief.label} relief`
+  );
+}
+
+function getRandomOverworldTeleportTile(seed: number): Vec2 {
+  const random = createSeededRandom(seed ^ 0x7e1e90);
+  return {
+    x: 22 + Math.floor(random() * (MAP_WIDTH - 44)),
+    y: 14 + Math.floor(random() * (MAP_HEIGHT - 28))
+  };
+}
+
+function createOverworldMap(
+  seed = MAP_GENERATION_SEED,
+  teleportTile: Vec2 = OVERWORLD_TELEPORT_TILE,
+  useProceduralFactors = false
+): MapData {
+  const generationFactors = useProceduralFactors ? createWorldGenerationFactors(seed) : null;
+  const spawnConfig = getSpawnConfigForActorPopulation(
+    generationFactors?.actorPopulation ?? null
+  );
+  const terrainScale = generationFactors?.terrainScale ?? TERRAIN_SCALE_FACTORS[1];
+  const terrainRelief = generationFactors?.terrainRelief ?? TERRAIN_RELIEF_FACTORS[1];
+  const dominantMaterial = generationFactors?.dominantMaterial ?? null;
   const map: MapData = {
     id: 'overworld',
     width: MAP_WIDTH,
@@ -723,84 +1159,125 @@ function createOverworldMap(): MapData {
     })),
     teleports: [
       {
-        x: OVERWORLD_TELEPORT_TILE.x,
-        y: OVERWORLD_TELEPORT_TILE.y,
-        targetMapId: 'pocket',
-        targetX: POCKET_SPAWN.x,
-        targetY: POCKET_SPAWN.y
+        x: teleportTile.x,
+        y: teleportTile.y,
+        targetMapId: 'hubWorld',
+        targetX: HUB_WORLD_SPAWN.x,
+        targetY: HUB_WORLD_SPAWN.y
       }
     ],
+    generationFactors,
     spawns: {
-      mobileNpcCount: DEFAULT_MOBILE_NPC_COUNT,
-      stationaryNpcCount: DEFAULT_STATIONARY_NPC_COUNT,
-      flowerCount: DEFAULT_FLOWER_COUNT
+      mobileNpcCount: spawnConfig.mobileNpcCount,
+      stationaryNpcCount: spawnConfig.stationaryNpcCount,
+      sturdyNpcCount: spawnConfig.sturdyNpcCount,
+      fixedSturdyNpcs: [],
+      fixedTriggers: [
+        {
+          x: 19.5,
+          y: 12.5,
+          width: 1.2,
+          depth: 1.2,
+          height: 1.1,
+          displayName: 'Old Marker',
+          labelRangeFactor: 1.15
+        },
+        {
+          x: 23.5,
+          y: 13.5,
+          width: 0.7,
+          depth: 0.7,
+          height: 0.8,
+          displayName: null,
+          labelRangeFactor: 0.6
+        }
+      ],
+      flowerCount: spawnConfig.flowerCount
     }
   };
 
   for (let y = 0; y < MAP_HEIGHT; y += 1) {
     for (let x = 0; x < MAP_WIDTH; x += 1) {
-      const elevation = octavePerlin2D(MAP_GENERATION_SEED, x * 0.05, y * 0.05, 5, 0.5, 2.2);
+      const elevation = octavePerlin2D(
+        seed,
+        x * terrainScale.elevationFrequency,
+        y * terrainScale.elevationFrequency,
+        5,
+        0.5,
+        2.2
+      );
       const detail = octavePerlin2D(
-        MAP_GENERATION_SEED + 31,
-        (x + 140) * 0.16,
-        (y - 80) * 0.16,
+        seed + 31,
+        (x + 140) * terrainScale.detailFrequency,
+        (y - 80) * terrainScale.detailFrequency,
         4,
         0.45,
         2.3
       );
       const moisture = octavePerlin2D(
-        MAP_GENERATION_SEED + 67,
-        (x - 60) * 0.026,
-        (y + 110) * 0.026,
+        seed + 67,
+        (x - 60) * terrainScale.moistureFrequency,
+        (y + 110) * terrainScale.moistureFrequency,
         3,
         0.5,
         2
       );
       const roughness = octavePerlin2D(
-        MAP_GENERATION_SEED + 103,
-        (x + 15) * 0.065,
-        (y + 25) * 0.065,
+        seed + 103,
+        (x + 15) * terrainScale.roughnessFrequency,
+        (y + 25) * terrainScale.roughnessFrequency,
         2,
         0.45,
         2.3
       );
       const ridgeField = ridgedNoise2D(
-        MAP_GENERATION_SEED + 149,
-        (x - 30) * 0.028,
-        (y + 45) * 0.028,
+        seed + 149,
+        (x - 30) * terrainScale.ridgeFrequency,
+        (y + 45) * terrainScale.ridgeFrequency,
         4,
         0.52,
         2.05
       );
       const ridgeMask = Math.pow(
         octavePerlin2D(
-          MAP_GENERATION_SEED + 211,
-          (x + 80) * 0.012,
-          (y - 120) * 0.012,
+          seed + 211,
+          (x + 80) * terrainScale.ridgeMaskFrequency,
+          (y - 120) * terrainScale.ridgeMaskFrequency,
           3,
           0.55,
           2
         ),
         1.1
       );
-      const baseHeightField = Math.pow(clamp(elevation * 0.5 + detail * 0.27 - 0.22, 0, 1), 1.6);
+      const baseHeightField = Math.pow(
+        clamp(elevation * 0.5 + detail * 0.27 - 0.22, 0, 1),
+        terrainRelief.basePower
+      );
       const ridgeSignal = Math.pow(clamp((ridgeField - 0.4) / 0.6, 0, 1), 2.2);
       const ridgeRegion = Math.pow(clamp((ridgeMask - 0.32) / 0.68, 0, 1), 1.1);
       const ridgeBoost = ridgeSignal * ridgeRegion;
       const normalizedHeightField = clamp(
-        baseHeightField * 0.76 + ridgeBoost * 2.2 + roughness * 0.025,
+        baseHeightField * terrainRelief.baseWeight +
+          ridgeBoost * terrainRelief.ridgeStrength +
+          roughness * 0.025,
         0,
         1
       );
       const shapedHeightField = normalizedHeightField;
-      const terracedHeight = clamp(1 + Math.round(shapedHeightField * 5), 1, 6);
+      const terracedHeight = clamp(
+        1 + Math.round(shapedHeightField * (terrainRelief.maxHeight - 1)),
+        1,
+        terrainRelief.maxHeight
+      );
       const materials = buildColumnMaterials(
+        seed,
         x,
         y,
         terracedHeight,
         shapedHeightField,
         moisture,
-        roughness
+        roughness,
+        dominantMaterial
       );
       const cell = getCell(map, x, y);
       cell.height = terracedHeight;
@@ -816,24 +1293,38 @@ function createOverworldMap(): MapData {
         x,
         y,
         spawnHeight,
-        buildColumnMaterials(x, y, spawnHeight, 0.5, 0.58, 0.32)
+        buildColumnMaterials(seed, x, y, spawnHeight, 0.5, 0.58, 0.32, dominantMaterial)
       );
     }
   }
 
-  for (let x = 15; x <= OVERWORLD_TELEPORT_TILE.x; x += 1) {
-    for (let y = OVERWORLD_TELEPORT_TILE.y - 1; y <= OVERWORLD_TELEPORT_TILE.y + 1; y += 1) {
+  const pathStartX = Math.min(15, teleportTile.x);
+  const pathEndX = Math.max(15, teleportTile.x);
+  for (let x = pathStartX; x <= pathEndX; x += 1) {
+    for (let y = teleportTile.y - 1; y <= teleportTile.y + 1; y += 1) {
       setColumn(
         map,
         x,
         y,
         spawnHeight,
-        buildColumnMaterials(x, y, spawnHeight, 0.5, 0.58, 0.32)
+        buildColumnMaterials(seed, x, y, spawnHeight, 0.5, 0.58, 0.32, dominantMaterial)
       );
     }
   }
 
-  setColumn(map, OVERWORLD_TELEPORT_TILE.x, OVERWORLD_TELEPORT_TILE.y, spawnHeight, [
+  for (let y = teleportTile.y - 2; y <= teleportTile.y + 2; y += 1) {
+    for (let x = teleportTile.x - 2; x <= teleportTile.x + 2; x += 1) {
+      setColumn(
+        map,
+        x,
+        y,
+        spawnHeight,
+        buildColumnMaterials(seed, x, y, spawnHeight, 0.5, 0.58, 0.32, dominantMaterial)
+      );
+    }
+  }
+
+  setColumn(map, teleportTile.x, teleportTile.y, spawnHeight, [
     'stone',
     'portal'
   ]);
@@ -841,36 +1332,61 @@ function createOverworldMap(): MapData {
   return map;
 }
 
-function createPocketMap(): MapData {
+function createHubWorldMap(
+  overworldSeed = MAP_GENERATION_SEED,
+  overworldTeleportTile: Vec2 = OVERWORLD_TELEPORT_TILE
+): MapData {
   const map: MapData = {
-    id: 'pocket',
-    width: POCKET_MAP_WIDTH,
-    height: POCKET_MAP_HEIGHT,
-    cells: Array.from({ length: POCKET_MAP_WIDTH * POCKET_MAP_HEIGHT }, () => ({
+    id: 'hubWorld',
+    width: HUB_WORLD_MAP_WIDTH,
+    height: HUB_WORLD_MAP_HEIGHT,
+    cells: Array.from({ length: HUB_WORLD_MAP_WIDTH * HUB_WORLD_MAP_HEIGHT }, () => ({
       height: 0,
       materials: []
     })),
     teleports: [
       {
-        x: POCKET_TELEPORT_TILE.x,
-        y: POCKET_TELEPORT_TILE.y,
+        x: HUB_WORLD_TELEPORT_TILE.x,
+        y: HUB_WORLD_TELEPORT_TILE.y,
         targetMapId: 'overworld',
-        targetX: OVERWORLD_TELEPORT_TILE.x + 0.5,
-        targetY: OVERWORLD_TELEPORT_TILE.y + 0.5
+        targetX: overworldTeleportTile.x + 0.5,
+        targetY: overworldTeleportTile.y + 0.5
       }
     ],
+    generationFactors: null,
     spawns: {
       mobileNpcCount: 0,
       stationaryNpcCount: 0,
+      sturdyNpcCount: 0,
+      fixedSturdyNpcs: [
+        {
+          x: 13.5,
+          y: 16.5,
+          displayName: 'Worldsmith',
+          onHitInteraction: 'regenerateOverworld'
+        }
+      ],
+      fixedTriggers: [
+        {
+          x: HUB_WORLD_TELEPORT_TILE.x + 0.5,
+          y: HUB_WORLD_TELEPORT_TILE.y + 0.5,
+          width: 2.2,
+          depth: 2.2,
+          height: 2.6,
+          displayName: getOverworldSeedLabel(overworldSeed),
+          labelRangeFactor: 99,
+          labelFontSizeFactor: 1.25
+        }
+      ],
       flowerCount: 0
     }
   };
 
-  const centerX = (POCKET_MAP_WIDTH - 1) * 0.5;
-  const centerY = (POCKET_MAP_HEIGHT - 1) * 0.5;
+  const centerX = (HUB_WORLD_MAP_WIDTH - 1) * 0.5;
+  const centerY = (HUB_WORLD_MAP_HEIGHT - 1) * 0.5;
 
-  for (let y = 0; y < POCKET_MAP_HEIGHT; y += 1) {
-    for (let x = 0; x < POCKET_MAP_WIDTH; x += 1) {
+  for (let y = 0; y < HUB_WORLD_MAP_HEIGHT; y += 1) {
+    for (let x = 0; x < HUB_WORLD_MAP_WIDTH; x += 1) {
       const dx = x - centerX;
       const dy = y - centerY;
       const distance = Math.hypot(dx, dy);
@@ -882,7 +1398,7 @@ function createPocketMap(): MapData {
         x,
         y,
         height,
-        buildColumnMaterials(x + 300, y + 300, height, 0.48, 0.7, 0.22)
+        buildColumnMaterials(MAP_GENERATION_SEED, x + 300, y + 300, height, 0.48, 0.7, 0.22)
       );
     }
   }
@@ -895,12 +1411,12 @@ function createPocketMap(): MapData {
         x,
         y,
         portalHeight,
-        buildColumnMaterials(x + 300, y + 300, portalHeight, 0.48, 0.7, 0.22)
+        buildColumnMaterials(MAP_GENERATION_SEED, x + 300, y + 300, portalHeight, 0.48, 0.7, 0.22)
       );
     }
   }
 
-  setColumn(map, POCKET_TELEPORT_TILE.x, POCKET_TELEPORT_TILE.y, portalHeight, [
+  setColumn(map, HUB_WORLD_TELEPORT_TILE.x, HUB_WORLD_TELEPORT_TILE.y, portalHeight, [
     'stone',
     'portal'
   ]);
@@ -990,10 +1506,13 @@ export class ThreeIsoGame {
   private readonly terrainGroup = new Group();
   private readonly actorDepthGroup = new Group();
   private readonly actorGroup = new Group();
+  private readonly actorLabelLayer = document.createElement('div');
   private readonly input = new InputController();
+  private currentOverworldSeed = MAP_GENERATION_SEED;
+  private currentOverworldTeleportTile: Vec2 = { ...OVERWORLD_TELEPORT_TILE };
   private readonly maps: Record<MapId, MapData> = {
     overworld: createOverworldMap(),
-    pocket: createPocketMap()
+    hubWorld: createHubWorldMap()
   };
   private map: MapData = this.maps.overworld;
   private readonly terrainBlocks: TerrainBlockInstance[] = [];
@@ -1007,11 +1526,13 @@ export class ThreeIsoGame {
   private readonly shadowMesh: Mesh;
   private readonly npcs: NpcState[] = [];
   private readonly flowers: FlowerState[] = [];
+  private readonly triggers: TriggerState[] = [];
   private readonly occupiedActorTiles = new Set<string>();
   private readonly terrainTopGeometry = createTerrainTopGeometry();
   private readonly terrainSideGeometry = createTerrainSideGeometry();
   private readonly shadowGeometry = new CircleGeometry(0.26, 24);
   private readonly attackDebugGeometry = new BoxGeometry(1, 1, 1);
+  private readonly triggerDebugGeometry = new BoxGeometry(1, 1, 1);
   private readonly playerDepthProxyGeometry = new BoxGeometry(
     PLAYER_DEPTH_PROXY_WIDTH,
     PLAYER_DEPTH_PROXY_HEIGHT,
@@ -1039,6 +1560,14 @@ export class ThreeIsoGame {
     color: 0xff4f4f,
     transparent: true,
     opacity: 0.32,
+    depthWrite: false,
+    depthTest: false
+  });
+  private readonly triggerDebugMaterial = new MeshBasicMaterial({
+    color: 0x00f6ff,
+    transparent: true,
+    opacity: 0.85,
+    wireframe: true,
     depthWrite: false,
     depthTest: false
   });
@@ -1102,7 +1631,10 @@ export class ThreeIsoGame {
   private actorDepthProxyHeightFactor = DEFAULT_ACTOR_DEPTH_PROXY_HEIGHT_FACTOR;
   private actorSpriteCameraBias = DEFAULT_ACTOR_SPRITE_CAMERA_BIAS;
   private actorDepthProxyCameraBias = DEFAULT_ACTOR_DEPTH_PROXY_CAMERA_BIAS;
+  private actorLabelRadius = DEFAULT_ACTOR_LABEL_RADIUS;
+  private actorLabelFontSize = DEFAULT_ACTOR_LABEL_FONT_SIZE;
   private showAttackHurtbox = true;
+  private showTriggerHitboxes = false;
   private sunAzimuth = DEFAULT_SUN_AZIMUTH;
   private sunElevation = DEFAULT_SUN_ELEVATION;
   private dragState: DragState | null = null;
@@ -1125,6 +1657,8 @@ export class ThreeIsoGame {
   private attackCooldownTimer = 0;
   private activeAttack: ActiveAttackState | null = null;
   private teleportArmed = true;
+  private teleportTransition: TeleportTransitionState | null = null;
+  private playerOpacity = 1;
 
   private readonly player: PlayerState = {
     x: OVERWORLD_SPAWN.x,
@@ -1178,6 +1712,8 @@ export class ThreeIsoGame {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = BasicShadowMap;
     this.root.prepend(this.renderer.domElement);
+    this.actorLabelLayer.className = 'actor-label-layer';
+    this.root.appendChild(this.actorLabelLayer);
 
     this.scene.background = new Color('#111821');
     this.hiddenTerrainMatrix.makeScale(
@@ -1221,6 +1757,7 @@ export class ThreeIsoGame {
     this.actorGroup.add(this.shadowMesh);
     this.spawnNpcs();
     this.spawnFlowers();
+    this.spawnTriggers();
     this.refreshActorDepthProxyScales();
 
     this.updateCompass();
@@ -1229,8 +1766,11 @@ export class ThreeIsoGame {
     this.updateNpcVisuals();
     this.updateFlowerActivity();
     this.updateFlowerVisuals();
+    this.updateTriggerActivity();
+    this.updateTriggerVisuals();
     this.updatePlayerVisuals();
     this.updateCamera(1 / 60, true);
+    this.updateActorLabels();
     this.updateHud();
     this.handleResize();
     window.addEventListener('resize', this.handleResize);
@@ -1389,13 +1929,36 @@ export class ThreeIsoGame {
     this.updateAttackDebugVisual();
   }
 
+  public setDebugShowTriggerHitboxes(enabled: boolean): void {
+    this.showTriggerHitboxes = enabled;
+    this.updateTriggerVisuals();
+  }
+
   public getDebugActorOcclusion(): ActorOcclusionDebugState {
     return {
       proxyWidthFactor: this.actorDepthProxyWidthFactor,
       proxyHeightFactor: this.actorDepthProxyHeightFactor,
       spriteCameraBias: this.actorSpriteCameraBias,
       proxyCameraBias: this.actorDepthProxyCameraBias,
-      showAttackHurtbox: this.showAttackHurtbox
+      showAttackHurtbox: this.showAttackHurtbox,
+      showTriggerHitboxes: this.showTriggerHitboxes
+    };
+  }
+
+  public setDebugActorLabelRadius(value: number): void {
+    this.actorLabelRadius = clamp(value, 0, 24);
+    this.updateActorLabels();
+  }
+
+  public setDebugActorLabelFontSize(value: number): void {
+    this.actorLabelFontSize = clamp(value, 8, 48);
+    this.updateActorLabels();
+  }
+
+  public getDebugActorLabels(): ActorLabelDebugState {
+    return {
+      radius: this.actorLabelRadius,
+      fontSize: this.actorLabelFontSize
     };
   }
 
@@ -1411,6 +1974,7 @@ export class ThreeIsoGame {
     this.camera.updateProjectionMatrix();
 
     this.renderer.setSize(width, height, false);
+    this.updateActorLabels();
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
@@ -1549,6 +2113,23 @@ export class ThreeIsoGame {
       x: screenX * basis.rightNorm.x - screenY * basis.topNorm.x,
       y: screenX * basis.rightNorm.y - screenY * basis.topNorm.y
     };
+  }
+
+  private getActorFacingDirectionFromScreenMove(screenDirection: Vec2): number {
+    const angle = Math.atan2(-screenDirection.y, screenDirection.x);
+    const rawDirection = Math.round((angle + Math.PI / 2) / (Math.PI / 4));
+    return (rawDirection % 8 + 8) % 8;
+  }
+
+  private updatePlayerFacingFromInputIntent(): void {
+    if (this.activeAttack) {
+      return;
+    }
+
+    const facingMove = this.input.getFacingScreenMoveVector();
+    if (facingMove) {
+      this.currentDirection = this.getActorFacingDirectionFromScreenMove(facingMove);
+    }
   }
 
   private getWorldScreenPosition(x: number, y: number, z: number): Vec2 {
@@ -1965,6 +2546,45 @@ export class ThreeIsoGame {
     return shadow;
   }
 
+  private createActorLabelElement(displayName: string | null): HTMLDivElement {
+    const label = document.createElement('div');
+    label.className = 'actor-label';
+    label.hidden = true;
+    label.style.display = 'none';
+    if (displayName) {
+      label.textContent = displayName;
+    }
+    this.actorLabelLayer.appendChild(label);
+    return label;
+  }
+
+  private setActorLabelVisible(label: HTMLDivElement, visible: boolean): void {
+    label.hidden = !visible;
+    label.style.display = visible ? '-webkit-box' : 'none';
+  }
+
+  private removeActorLabelElement(label: HTMLDivElement): void {
+    label.remove();
+  }
+
+  private getNpcDisplayName(kind: NpcKind, randomSeed: number, x: number, y: number): string {
+    const tileX = Math.floor(x);
+    const tileY = Math.floor(y);
+    const namePool = kind === 'sturdy' ? STURDY_NPC_NAME_POOL : NPC_NAME_POOL;
+    return pickName(namePool, randomSeed + 503, tileX, tileY);
+  }
+
+  private getFlowerDisplayName(randomSeed: number, x: number, y: number): string | null {
+    const tileX = Math.floor(x);
+    const tileY = Math.floor(y);
+
+    if (hashUnit(randomSeed + 809, tileX, tileY) > 0.35) {
+      return null;
+    }
+
+    return pickName(FLOWER_NAME_POOL, randomSeed + 811, tileX, tileY);
+  }
+
   private hasWalkableNeighbor(tileX: number, tileY: number): boolean {
     const height = getHeight(this.map, tileX, tileY);
 
@@ -2021,29 +2641,37 @@ export class ThreeIsoGame {
     }
   }
 
-  private getMapSpawnSeedOffset(): number {
-    return this.map.id === 'overworld' ? 0 : 10000;
+  private getMapSpawnSeedBase(): number {
+    return this.map.id === 'overworld' ? this.currentOverworldSeed : MAP_GENERATION_SEED + 10000;
   }
 
   private spawnNpcs(): void {
-    const spawnSeedOffset = this.getMapSpawnSeedOffset();
+    const spawnSeedBase = this.getMapSpawnSeedBase();
     const mobileCandidates = this.collectNpcSpawnCandidates(true);
     const stationaryCandidates = this.collectNpcSpawnCandidates(false);
-    this.shuffleSpawnCandidates(mobileCandidates, MAP_GENERATION_SEED + spawnSeedOffset + 601);
-    this.shuffleSpawnCandidates(stationaryCandidates, MAP_GENERATION_SEED + spawnSeedOffset + 907);
+    this.shuffleSpawnCandidates(mobileCandidates, spawnSeedBase + 601);
+    this.shuffleSpawnCandidates(stationaryCandidates, spawnSeedBase + 907);
 
     const createNpc = (
-      kind: NpcState['kind'],
+      kind: NpcKind,
       x: number,
       y: number,
       tintHex: string,
-      randomSeed: number
+      randomSeed: number,
+      displayNameOverride: string | null | undefined = undefined,
+      onHitInteraction: ActorHitInteraction | null = null,
+      onPlainInteraction: ActorPlainInteraction | null = null
     ): NpcState => {
       const frameTexture = this.frameTextures[4][1];
       const spriteMaterial = this.createActorSpriteMaterial(frameTexture, tintHex, true);
       const sprite = this.createActorSprite(spriteMaterial);
       const depthProxy = this.createActorDepthProxy(this.npcDepthProxyGeometry);
       const shadow = this.createActorShadow();
+      const displayName =
+        displayNameOverride === undefined
+          ? this.getNpcDisplayName(kind, randomSeed, x, y)
+          : displayNameOverride;
+      const labelElement = this.createActorLabelElement(displayName);
       sprite.visible = false;
       depthProxy.visible = false;
       shadow.visible = false;
@@ -2075,6 +2703,13 @@ export class ThreeIsoGame {
         touchFlashTimer: 0,
         attackFlashTimer: 0,
         playerTouching: false,
+        knockbackable: kind !== 'sturdy',
+        displayName,
+        labelRangeFactor: kind === 'sturdy' ? 1.35 : 1,
+        labelFontSizeFactor: kind === 'sturdy' ? 1.08 : 1,
+        onHitInteraction,
+        onPlainInteraction,
+        labelElement,
         baseTint: new Color(tintHex),
         spriteMaterial,
         sprite,
@@ -2084,7 +2719,7 @@ export class ThreeIsoGame {
     };
 
     const addNpcs = (
-      kind: NpcState['kind'],
+      kind: NpcKind,
       count: number,
       tintHex: string,
       candidates: Vec2[],
@@ -2109,7 +2744,7 @@ export class ThreeIsoGame {
             candidate.x,
             candidate.y,
             tintHex,
-            MAP_GENERATION_SEED + spawnSeedOffset + seedOffset + this.npcs.length * 17
+            spawnSeedBase + seedOffset + this.npcs.length * 17
           )
         );
         spawned += 1;
@@ -2120,6 +2755,38 @@ export class ThreeIsoGame {
       }
     };
 
+    const addFixedSturdyNpc = (config: FixedSturdyNpcSpawnConfig, index: number): void => {
+      const tileX = Math.floor(config.x);
+      const tileY = Math.floor(config.y);
+
+      if (
+        tileX < 0 ||
+        tileY < 0 ||
+        tileX >= this.map.width ||
+        tileY >= this.map.height
+      ) {
+        return;
+      }
+
+      const tileKey = `${tileX}:${tileY}`;
+      if (this.occupiedActorTiles.has(tileKey)) {
+        return;
+      }
+
+      this.occupiedActorTiles.add(tileKey);
+      this.npcs.push(
+        createNpc(
+          'sturdy',
+          config.x,
+          config.y,
+          STURDY_NPC_TINT,
+          spawnSeedBase + 2900 + index * 17,
+          config.displayName,
+          config.onHitInteraction ?? null
+        )
+      );
+    };
+
     addNpcs('mobile', this.map.spawns.mobileNpcCount, MOBILE_NPC_TINT, mobileCandidates, 1300);
     addNpcs(
       'stationary',
@@ -2128,6 +2795,8 @@ export class ThreeIsoGame {
       stationaryCandidates,
       2100
     );
+    addNpcs('sturdy', this.map.spawns.sturdyNpcCount, STURDY_NPC_TINT, stationaryCandidates, 2500);
+    this.map.spawns.fixedSturdyNpcs.forEach(addFixedSturdyNpc);
   }
 
   private spawnFlowers(): void {
@@ -2135,10 +2804,10 @@ export class ThreeIsoGame {
       return;
     }
 
-    const spawnSeedOffset = this.getMapSpawnSeedOffset();
+    const spawnSeedBase = this.getMapSpawnSeedBase();
     const candidates = this.collectNpcSpawnCandidates(false);
-    this.shuffleSpawnCandidates(candidates, MAP_GENERATION_SEED + spawnSeedOffset + 3001);
-    const random = createSeededRandom(MAP_GENERATION_SEED + spawnSeedOffset + 4103);
+    this.shuffleSpawnCandidates(candidates, spawnSeedBase + 3001);
+    const random = createSeededRandom(spawnSeedBase + 4103);
     let spawned = 0;
 
     for (const candidate of candidates) {
@@ -2157,6 +2826,12 @@ export class ThreeIsoGame {
       );
       const depthProxy = this.createActorDepthProxy(this.flowerDepthProxyGeometry);
       const shadow = this.createActorShadow();
+      const displayName = this.getFlowerDisplayName(
+        spawnSeedBase + 5303 + spawned * 19,
+        candidate.x,
+        candidate.y
+      );
+      const labelElement = this.createActorLabelElement(displayName);
       sprite.visible = false;
       depthProxy.visible = false;
       shadow.visible = false;
@@ -2176,6 +2851,12 @@ export class ThreeIsoGame {
         touchFlashTimer: 0,
         attackFlashTimer: 0,
         playerTouching: false,
+        displayName,
+        labelRangeFactor: 0.75,
+        labelFontSizeFactor: 0.92,
+        onHitInteraction: null,
+        onPlainInteraction: null,
+        labelElement,
         spriteMaterial,
         sprite,
         depthProxy,
@@ -2190,11 +2871,57 @@ export class ThreeIsoGame {
     }
   }
 
+  private spawnTriggers(): void {
+    this.map.spawns.fixedTriggers.forEach((config, index) => {
+      const tileX = Math.floor(config.x);
+      const tileY = Math.floor(config.y);
+
+      if (
+        tileX < 0 ||
+        tileY < 0 ||
+        tileX >= this.map.width ||
+        tileY >= this.map.height
+      ) {
+        return;
+      }
+
+      const labelElement = this.createActorLabelElement(config.displayName);
+      const debugMesh = new Mesh(this.triggerDebugGeometry, this.triggerDebugMaterial);
+      debugMesh.visible = false;
+      debugMesh.renderOrder = ACTOR_SPRITE_RENDER_ORDER + 3;
+      debugMesh.castShadow = false;
+      debugMesh.receiveShadow = false;
+      this.actorGroup.add(debugMesh);
+
+      this.triggers.push({
+        id: `trigger-${this.map.id}-${tileX}-${tileY}-${index}`,
+        x: config.x,
+        y: config.y,
+        z: this.getSupportHeight(config.x, config.y),
+        width: config.width,
+        depth: config.depth,
+        height: config.height,
+        active: false,
+        touchFlashTimer: 0,
+        attackFlashTimer: 0,
+        playerTouching: false,
+        displayName: config.displayName,
+        labelRangeFactor: config.labelRangeFactor ?? 1,
+        labelFontSizeFactor: config.labelFontSizeFactor ?? 1,
+        onHitInteraction: null,
+        onPlainInteraction: null,
+        labelElement,
+        debugMesh
+      });
+    });
+  }
+
   private clearMapActors(): void {
     for (const npc of this.npcs) {
       this.actorDepthGroup.remove(npc.depthProxy);
       this.actorGroup.remove(npc.sprite);
       this.actorGroup.remove(npc.shadow);
+      this.removeActorLabelElement(npc.labelElement);
       npc.spriteMaterial.dispose();
     }
 
@@ -2202,11 +2929,18 @@ export class ThreeIsoGame {
       this.actorDepthGroup.remove(flower.depthProxy);
       this.actorGroup.remove(flower.sprite);
       this.actorGroup.remove(flower.shadow);
+      this.removeActorLabelElement(flower.labelElement);
       flower.spriteMaterial.dispose();
+    }
+
+    for (const trigger of this.triggers) {
+      this.actorGroup.remove(trigger.debugMesh);
+      this.removeActorLabelElement(trigger.labelElement);
     }
 
     this.npcs.length = 0;
     this.flowers.length = 0;
+    this.triggers.length = 0;
     this.occupiedActorTiles.clear();
   }
 
@@ -2234,18 +2968,135 @@ export class ThreeIsoGame {
     this.buildTerrain();
     this.spawnNpcs();
     this.spawnFlowers();
+    this.spawnTriggers();
     this.refreshActorDepthProxyScales();
     this.updateNpcActivity();
     this.updateFlowerActivity();
+    this.updateTriggerActivity();
     this.updateNpcVisuals();
     this.updateFlowerVisuals();
+    this.updateTriggerVisuals();
     this.updatePlayerVisuals();
     this.updateCamera(1 / 60, true);
+    this.updateActorLabels();
     this.updateHud();
     this.teleportArmed = false;
   }
 
+  private regenerateOverworld(): void {
+    const nextSeed = this.createNextOverworldSeed();
+    const nextTeleportTile = getRandomOverworldTeleportTile(nextSeed);
+
+    this.currentOverworldSeed = nextSeed;
+    this.currentOverworldTeleportTile = nextTeleportTile;
+    this.maps.overworld = createOverworldMap(nextSeed, nextTeleportTile, true);
+    this.updateHubWorldOverworldLink();
+    this.updateHud();
+  }
+
+  private createNextOverworldSeed(): number {
+    let seed = Math.floor(Math.random() * 0x100000000) >>> 0;
+
+    if (seed === this.currentOverworldSeed) {
+      seed = (seed ^ Date.now()) >>> 0;
+    }
+
+    return seed;
+  }
+
+  private updateHubWorldOverworldLink(): void {
+    const hubWorld = this.maps.hubWorld;
+    const hubTeleport = hubWorld.teleports[0];
+
+    if (hubTeleport) {
+      hubTeleport.targetX = this.currentOverworldTeleportTile.x + 0.5;
+      hubTeleport.targetY = this.currentOverworldTeleportTile.y + 0.5;
+    }
+
+    const seedLabel = getOverworldSeedLabel(this.currentOverworldSeed);
+    const hubSeedTrigger = hubWorld.spawns.fixedTriggers[0];
+    if (hubSeedTrigger) {
+      hubSeedTrigger.displayName = seedLabel;
+    }
+
+    for (const trigger of this.triggers) {
+      if (
+        this.map.id === 'hubWorld' &&
+        Math.floor(trigger.x) === HUB_WORLD_TELEPORT_TILE.x &&
+        Math.floor(trigger.y) === HUB_WORLD_TELEPORT_TILE.y
+      ) {
+        trigger.displayName = seedLabel;
+        trigger.labelElement.textContent = seedLabel;
+      }
+    }
+
+    this.updateActorLabels();
+  }
+
+  private setPlayerOpacity(opacity: number): void {
+    this.playerOpacity = clamp(opacity, 0, 1);
+    this.spriteMaterial.opacity = this.playerOpacity;
+    this.spriteMaterial.needsUpdate = true;
+
+    const visible = this.playerOpacity > 0.01;
+    this.playerSprite.visible = visible;
+    this.playerDepthProxy.visible = visible;
+    this.shadowMesh.visible = visible;
+  }
+
+  private startTeleportTransition(teleport: TeleportTile): void {
+    this.teleportArmed = false;
+    this.teleportTransition = {
+      phase: 'fadeOut',
+      timer: 0,
+      targetMapId: teleport.targetMapId,
+      targetX: teleport.targetX,
+      targetY: teleport.targetY
+    };
+  }
+
+  private updateTeleportTransition(dt: number): void {
+    if (!this.teleportTransition) {
+      return;
+    }
+
+    this.teleportTransition.timer = Math.min(
+      TELEPORT_FADE_DURATION,
+      this.teleportTransition.timer + dt
+    );
+    const progress = this.teleportTransition.timer / TELEPORT_FADE_DURATION;
+
+    if (this.teleportTransition.phase === 'fadeOut') {
+      this.setPlayerOpacity(1 - progress);
+
+      if (progress >= 1) {
+        const { targetMapId, targetX, targetY } = this.teleportTransition;
+        this.loadMap(targetMapId, targetX, targetY);
+        this.teleportTransition = {
+          phase: 'fadeIn',
+          timer: 0,
+          targetMapId,
+          targetX,
+          targetY
+        };
+        this.setPlayerOpacity(0);
+      }
+
+      return;
+    }
+
+    this.setPlayerOpacity(progress);
+    if (progress >= 1) {
+      this.teleportTransition = null;
+      this.setPlayerOpacity(1);
+    }
+  }
+
   private updateMapTeleport(): void {
+    if (this.teleportTransition) {
+      return;
+    }
+
     const tileX = Math.floor(this.player.x);
     const tileY = Math.floor(this.player.y);
     const teleport = this.getTeleportAtTile(tileX, tileY);
@@ -2259,7 +3110,7 @@ export class ThreeIsoGame {
       return;
     }
 
-    this.loadMap(teleport.targetMapId, teleport.targetX, teleport.targetY);
+    this.startTeleportTransition(teleport);
   }
 
   private getTopBaseColor(materialKey: MaterialKey): Color {
@@ -3583,8 +4434,11 @@ export class ThreeIsoGame {
           NPC_BODY_HEIGHT,
           () => {
             npc.attackFlashTimer = ATTACK_FLASH_TIME;
-            npc.knockbackVX = attack.worldDirection.x * attack.profile.knockback;
-            npc.knockbackVY = attack.worldDirection.y * attack.profile.knockback;
+            if (npc.knockbackable) {
+              npc.knockbackVX = attack.worldDirection.x * attack.profile.knockback;
+              npc.knockbackVY = attack.worldDirection.y * attack.profile.knockback;
+            }
+            this.handleActorHitInteraction(npc.onHitInteraction);
           }
         );
       }
@@ -3608,9 +4462,42 @@ export class ThreeIsoGame {
             flower.attackFlashTimer = ATTACK_FLASH_TIME;
             flower.knockbackVX = attack.worldDirection.x * attack.profile.knockback * 0.8;
             flower.knockbackVY = attack.worldDirection.y * attack.profile.knockback * 0.8;
+            this.handleActorHitInteraction(flower.onHitInteraction);
           }
         );
       }
+    }
+
+    if (attack.profile.affectsTriggers) {
+      for (const trigger of this.triggers) {
+        if (!trigger.active) {
+          continue;
+        }
+
+        this.tryHitTargetWithAttack(
+          attack,
+          trigger.id,
+          trigger.x,
+          trigger.y,
+          trigger.z,
+          Math.max(trigger.width, trigger.depth) * 0.5,
+          trigger.height,
+          () => {
+            trigger.attackFlashTimer = ATTACK_FLASH_TIME;
+            this.handleActorHitInteraction(trigger.onHitInteraction);
+          }
+        );
+      }
+    }
+  }
+
+  private handleActorHitInteraction(interaction: ActorHitInteraction | null): void {
+    switch (interaction) {
+      case 'regenerateOverworld':
+        this.regenerateOverworld();
+        return;
+      default:
+        return;
     }
   }
 
@@ -3737,11 +4624,13 @@ export class ThreeIsoGame {
       this.updateCamera(dt, true);
     }
 
+    const move = this.input.getScreenMoveVector();
+
+    this.updatePlayerFacingFromInputIntent();
+
     if (attackPressed) {
       this.tryStartPlayerAttackInFacingDirection();
     }
-
-    const move = this.input.getScreenMoveVector();
 
     if (jumpPressed) {
       this.jumpBufferTimer = JUMP_BUFFER_TIME;
@@ -3874,19 +4763,27 @@ export class ThreeIsoGame {
       this.player.grounded = true;
     }
 
-    this.updateMapTeleport();
+    this.updateTeleportTransition(dt);
+    if (!this.teleportTransition) {
+      this.updateMapTeleport();
+    }
     this.updateNpcActivity();
     this.updateNpcs(dt);
     this.updateNpcTouchFeedback();
     this.updateFlowerActivity();
     this.updateFlowers(dt);
     this.updateFlowerTouchFeedback();
+    this.updateTriggerActivity();
+    this.updateTriggers(dt);
+    this.updateTriggerTouchFeedback();
     this.updateActiveAttack(dt);
     this.updatePlayerAnimation(dt);
     this.updatePlayerVisuals();
     this.updateNpcVisuals();
     this.updateFlowerVisuals();
+    this.updateTriggerVisuals();
     this.updateCamera(dt, false);
+    this.updateActorLabels();
 
     this.hudUpdateTimer = Math.max(0, this.hudUpdateTimer - dt);
     if (this.hudUpdateTimer === 0) {
@@ -3900,8 +4797,8 @@ export class ThreeIsoGame {
 
     if (this.activeAttack) {
       this.currentDirection = this.activeAttack.facingDirectionIndex;
-    } else if (planarSpeed > 0.05) {
-      this.currentDirection = this.getActorFacingDirection(this.player.vx, this.player.vy);
+    } else {
+      this.updatePlayerFacingFromInputIntent();
     }
 
     const walking = planarSpeed > 0.15 && this.player.grounded;
@@ -3955,6 +4852,19 @@ export class ThreeIsoGame {
     }
   }
 
+  private updateTriggerActivity(): void {
+    const aliveRadiusSq = ACTOR_ALIVE_RADIUS * ACTOR_ALIVE_RADIUS;
+
+    for (const trigger of this.triggers) {
+      const dx = trigger.x - this.player.x;
+      const dy = trigger.y - this.player.y;
+      trigger.active = dx * dx + dy * dy <= aliveRadiusSq;
+      if (trigger.active) {
+        trigger.z = this.getSupportHeight(trigger.x, trigger.y);
+      }
+    }
+  }
+
   private updateNpcs(dt: number): void {
     for (const npc of this.npcs) {
       npc.touchFlashTimer = Math.max(0, npc.touchFlashTimer - dt);
@@ -3980,7 +4890,7 @@ export class ThreeIsoGame {
         continue;
       }
 
-      if (npc.kind === 'stationary') {
+      if (npc.kind !== 'mobile') {
         npc.vx = 0;
         npc.vy = 0;
         npc.walkTime = 0;
@@ -4042,6 +4952,17 @@ export class ThreeIsoGame {
     }
   }
 
+  private updateTriggers(dt: number): void {
+    for (const trigger of this.triggers) {
+      trigger.touchFlashTimer = Math.max(0, trigger.touchFlashTimer - dt);
+      trigger.attackFlashTimer = Math.max(0, trigger.attackFlashTimer - dt);
+
+      if (!trigger.active) {
+        trigger.playerTouching = false;
+      }
+    }
+  }
+
   private updateNpcTouchFeedback(): void {
     const touchRadius = PLAYER_COLLISION_RADIUS + NPC_COLLISION_RADIUS;
     const touchRadiusSq = touchRadius * touchRadius;
@@ -4083,6 +5004,39 @@ export class ThreeIsoGame {
       }
 
       flower.playerTouching = touching;
+    }
+  }
+
+  private updateTriggerTouchFeedback(): void {
+    for (const trigger of this.triggers) {
+      if (!trigger.active) {
+        trigger.playerTouching = false;
+        continue;
+      }
+
+      const closestX = clamp(
+        this.player.x,
+        trigger.x - trigger.width * 0.5,
+        trigger.x + trigger.width * 0.5
+      );
+      const closestY = clamp(
+        this.player.y,
+        trigger.y - trigger.depth * 0.5,
+        trigger.y + trigger.depth * 0.5
+      );
+      const dx = this.player.x - closestX;
+      const dy = this.player.y - closestY;
+      const overlapsHeight =
+        this.player.z <= trigger.z + trigger.height &&
+        this.player.z + PLAYER_BODY_HEIGHT >= trigger.z;
+      const touching =
+        overlapsHeight && dx * dx + dy * dy <= PLAYER_COLLISION_RADIUS * PLAYER_COLLISION_RADIUS;
+
+      if (touching && !trigger.playerTouching) {
+        trigger.touchFlashTimer = NPC_TOUCH_FLASH_TIME;
+      }
+
+      trigger.playerTouching = touching;
     }
   }
 
@@ -4223,6 +5177,113 @@ export class ThreeIsoGame {
     }
   }
 
+  private updateTriggerVisuals(): void {
+    for (const trigger of this.triggers) {
+      trigger.debugMesh.visible = this.showTriggerHitboxes;
+
+      if (!trigger.debugMesh.visible) {
+        continue;
+      }
+
+      trigger.z = this.getSupportHeight(trigger.x, trigger.y);
+
+      trigger.debugMesh.position.set(
+        trigger.x,
+        trigger.z + trigger.height * 0.5,
+        trigger.y
+      );
+      trigger.debugMesh.scale.set(trigger.width, trigger.height, trigger.depth);
+      trigger.debugMesh.material = this.triggerDebugMaterial;
+    }
+  }
+
+  private updateActorLabels(): void {
+    for (const npc of this.npcs) {
+      this.updateActorLabel(
+        npc.labelElement,
+        npc.displayName,
+        npc.active,
+        npc.x,
+        npc.y,
+        npc.z + NPC_BODY_HEIGHT + 0.18,
+        npc.labelRangeFactor,
+        npc.labelFontSizeFactor
+      );
+    }
+
+    for (const flower of this.flowers) {
+      this.updateActorLabel(
+        flower.labelElement,
+        flower.displayName,
+        flower.active,
+        flower.x,
+        flower.y,
+        flower.z + FLOWER_WORLD_HEIGHT + 0.12,
+        flower.labelRangeFactor,
+        flower.labelFontSizeFactor
+      );
+    }
+
+    for (const trigger of this.triggers) {
+      this.updateActorLabel(
+        trigger.labelElement,
+        trigger.displayName,
+        trigger.active,
+        trigger.x,
+        trigger.y,
+        trigger.z + trigger.height + 0.14,
+        trigger.labelRangeFactor,
+        trigger.labelFontSizeFactor
+      );
+    }
+  }
+
+  private updateActorLabel(
+    label: HTMLDivElement,
+    displayName: string | null,
+    active: boolean,
+    x: number,
+    y: number,
+    labelZ: number,
+    rangeFactor: number,
+    fontSizeFactor: number
+  ): void {
+    if (!displayName || !active || this.actorLabelRadius <= 0) {
+      this.setActorLabelVisible(label, false);
+      return;
+    }
+
+    const dx = x - this.player.x;
+    const dy = y - this.player.y;
+    const labelRadius = this.actorLabelRadius * rangeFactor;
+
+    if (dx * dx + dy * dy > labelRadius * labelRadius) {
+      this.setActorLabelVisible(label, false);
+      return;
+    }
+
+    const screenPosition = this.getWorldScreenPosition(x, labelZ, y);
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const rootRect = this.root.getBoundingClientRect();
+    const localX = screenPosition.x - rootRect.left;
+    const localY = screenPosition.y - rootRect.top;
+    const margin = 48;
+
+    if (
+      screenPosition.x < rect.left - margin ||
+      screenPosition.x > rect.right + margin ||
+      screenPosition.y < rect.top - margin ||
+      screenPosition.y > rect.bottom + margin
+    ) {
+      this.setActorLabelVisible(label, false);
+      return;
+    }
+
+    this.setActorLabelVisible(label, true);
+    label.style.transform = `translate3d(${localX.toFixed(1)}px, ${localY.toFixed(1)}px, 0) translate(-50%, -100%)`;
+    label.style.fontSize = `${(this.actorLabelFontSize * fontSizeFactor).toFixed(1)}px`;
+  }
+
   private updateCamera(dt: number, snap: boolean): void {
     this.cameraDesiredFocus.set(
       this.player.x,
@@ -4296,6 +5357,8 @@ export class ThreeIsoGame {
 
     this.hudStatus.textContent =
       `Map: ${this.map.id}\n` +
+      `${getOverworldSeedLabel(this.currentOverworldSeed)}\n` +
+      `${getWorldGenerationFactorLabel(this.maps.overworld.generationFactors)}\n` +
       `Position: ${this.player.x.toFixed(2)}, ${this.player.y.toFixed(2)}, ${this.player.z.toFixed(2)}\n` +
       `Ground: ${ground.toFixed(2)}  |  Vertical speed: ${this.player.vz.toFixed(2)}\n` +
       `State: ${this.player.grounded ? 'grounded' : 'airborne'}  |  View: ${viewName}-up (${this.viewRotation * 90} deg)\n` +
