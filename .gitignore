@@ -5,3 +5,4 @@ out
 release
 .DS_Store
 *_debug_*.png
+.webui_secret_key
