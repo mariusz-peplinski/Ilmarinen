@@ -114,13 +114,14 @@ interface PlayerState {
 
 type NpcKind = 'mobile' | 'stationary' | 'sturdy';
 type ActorHitInteraction = 'regenerateOverworld';
-type ActorPlainInteraction = 'inspect';
+type ActorPlainInteraction = 'inspect' | 'regenerateOverworld';
 
 interface FixedSturdyNpcSpawnConfig {
   x: number;
   y: number;
   displayName?: string | null;
   onHitInteraction?: ActorHitInteraction;
+  onPlainInteraction?: ActorPlainInteraction;
 }
 
 interface NpcState {
@@ -181,6 +182,23 @@ interface FlowerState {
   frameTexture: CanvasTexture;
 }
 
+interface CrystalPickupState {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  active: boolean;
+  collected: boolean;
+  displayName: string;
+  labelRangeFactor: number;
+  labelFontSizeFactor: number;
+  labelElement: HTMLDivElement;
+  spriteMaterial: SpriteMaterial;
+  sprite: Sprite;
+  depthProxy: Mesh;
+  shadow: Mesh;
+}
+
 interface TriggerSpawnConfig {
   x: number;
   y: number;
@@ -234,6 +252,14 @@ interface ActiveAttackState {
   worldDirection: Vec2;
   remaining: number;
   hitTargets: Set<string>;
+  facingDirectionIndex: number;
+}
+
+interface ActivePlainInteractionState {
+  profile: AttackProfile;
+  worldDirection: Vec2;
+  remaining: number;
+  hitTarget: boolean;
   facingDirectionIndex: number;
 }
 
@@ -450,6 +476,8 @@ const DEFAULT_MOBILE_NPC_COUNT = 8;
 const DEFAULT_STATIONARY_NPC_COUNT = DEFAULT_MOBILE_NPC_COUNT * 4;
 const DEFAULT_STURDY_NPC_COUNT = 6;
 const DEFAULT_FLOWER_COUNT = 96;
+const INITIAL_CRYSTAL_COUNT = 7;
+const OVERWORLD_CRYSTAL_PICKUP_COUNT = 2;
 const TERRAIN_MATERIAL_KEYS: readonly TerrainMaterialKey[] = ['grass', 'stone', 'sand', 'moss'];
 const ACTOR_POPULATION_FACTORS: readonly ActorPopulationFactor[] = [
   'flowers',
@@ -560,6 +588,15 @@ const NPC_WALK_SPEED_MAX = 0.72;
 const FLOWER_WORLD_WIDTH = 1.84;
 const FLOWER_WORLD_HEIGHT = 1.84;
 const FLOWER_SHADOW_SCALE = 0.62;
+const CRYSTAL_SHEET_CELL_SIZE = 16;
+const CRYSTAL_SHEET_FRAME_X = 1;
+const CRYSTAL_SHEET_FRAME_Y = 1;
+const CRYSTAL_WORLD_WIDTH = 0.68;
+const CRYSTAL_WORLD_HEIGHT = 0.68;
+const CRYSTAL_COLLISION_RADIUS = 0.28;
+const CRYSTAL_SHADOW_SCALE = 0.38;
+const CRYSTAL_LABEL_RANGE_FACTOR = 0.31;
+const CRYSTAL_LABEL_FONT_SIZE_FACTOR = 0.62;
 const DEFAULT_ATTACK_PROFILE: AttackProfile = {
   duration: 0.3,
   cooldown: 0.22,
@@ -572,6 +609,14 @@ const DEFAULT_ATTACK_PROFILE: AttackProfile = {
   affectsNpcs: true,
   affectsFlowers: true,
   affectsTriggers: true
+};
+const DEFAULT_PLAIN_INTERACTION_PROFILE: AttackProfile = {
+  ...DEFAULT_ATTACK_PROFILE,
+  duration: 0.08,
+  cooldown: 0,
+  knockback: 0,
+  damage: 0,
+  interactionKind: 'smash'
 };
 const TERRAIN_CHUNK_SIZE = 16;
 const ACTOR_DEPTH_PROXY_RENDER_ORDER = -10;
@@ -598,6 +643,7 @@ const FLOWER_BODY_HEIGHT = 0.72;
 const FLOWER_DEPTH_PROXY_WIDTH = FLOWER_WORLD_WIDTH * FLOWER_DEPTH_PROXY_WIDTH_FACTOR;
 const FLOWER_DEPTH_PROXY_HEIGHT = FLOWER_BODY_HEIGHT * FLOWER_DEPTH_PROXY_HEIGHT_FACTOR;
 const ATTACK_HURTBOX_ELEVATION = 0.04;
+const INTERACTION_HURTBOX_ELEVATION = 0.06;
 const DEFAULT_TERRAIN_TOP_EDGE_BAND_WIDTH = 0.12;
 const TERRAIN_TOP_EDGE_BAND_ELEVATION = 0.01;
 const DEFAULT_TERRAIN_TOP_EDGE_BAND_BRIGHTNESS = 0.62;
@@ -665,6 +711,7 @@ class InputController {
   private readonly moveKeyPressOrder: string[] = [];
   private jumpQueued = false;
   private attackQueued = false;
+  private interactQueued = false;
   private rotateQueued = 0;
   private freeCameraToggleQueued = false;
 
@@ -695,6 +742,10 @@ class InputController {
         this.attackQueued = true;
       }
 
+      if (event.code === 'KeyE' && !event.repeat) {
+        this.interactQueued = true;
+      }
+
       if (getMoveKeyScreenDirection(event.code) && !event.repeat) {
         const existingIndex = this.moveKeyPressOrder.indexOf(event.code);
         if (existingIndex >= 0) {
@@ -720,6 +771,7 @@ class InputController {
       this.moveKeyPressOrder.length = 0;
       this.jumpQueued = false;
       this.attackQueued = false;
+      this.interactQueued = false;
       this.rotateQueued = 0;
       this.freeCameraToggleQueued = false;
     });
@@ -824,6 +876,12 @@ class InputController {
   public consumeAttack(): boolean {
     const queued = this.attackQueued;
     this.attackQueued = false;
+    return queued;
+  }
+
+  public consumeInteract(): boolean {
+    const queued = this.interactQueued;
+    this.interactQueued = false;
     return queued;
   }
 
@@ -1371,7 +1429,7 @@ function createHubWorldMap(
           x: 13.5,
           y: 16.5,
           displayName: 'Worldsmith',
-          onHitInteraction: 'regenerateOverworld'
+          onPlainInteraction: 'regenerateOverworld'
         }
       ],
       fixedTriggers: [
@@ -1497,6 +1555,37 @@ function loadFrameTexture(
   return texture;
 }
 
+function getFrameDataUrl(
+  image: HTMLImageElement,
+  column: number,
+  row: number,
+  frameWidth: number,
+  frameHeight: number
+): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = frameWidth;
+  canvas.height = frameHeight;
+  const ctx = canvas.getContext('2d');
+
+  if (!ctx) {
+    throw new Error('Failed to create 2D context for crystal counter icon extraction.');
+  }
+
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(
+    image,
+    column * frameWidth,
+    row * frameHeight,
+    frameWidth,
+    frameHeight,
+    0,
+    0,
+    frameWidth,
+    frameHeight
+  );
+  return canvas.toDataURL('image/png');
+}
+
 export class ThreeIsoGame {
   private readonly root: HTMLDivElement;
   private readonly hudStatus: HTMLDivElement;
@@ -1516,6 +1605,8 @@ export class ThreeIsoGame {
   private readonly actorGroup = new Group();
   private readonly actorLabelLayer = document.createElement('div');
   private readonly screenFlashLayer = document.createElement('div');
+  private readonly crystalCounterElement = document.createElement('div');
+  private readonly crystalCounterValue = document.createElement('span');
   private readonly input = new InputController();
   private currentOverworldSeed = MAP_GENERATION_SEED;
   private currentOverworldTeleportTile: Vec2 = { ...OVERWORLD_TELEPORT_TILE };
@@ -1529,14 +1620,17 @@ export class ThreeIsoGame {
   private readonly terrainChunks: TerrainChunkRender[] = [];
   private readonly frameTextures: CanvasTexture[][];
   private readonly flowerFrameTextures: CanvasTexture[];
+  private readonly crystalFrameTexture: CanvasTexture;
   private readonly spriteMaterial: SpriteMaterial;
   private readonly playerSprite: Sprite;
   private readonly playerDepthProxy: Mesh;
   private readonly shadowMesh: Mesh;
   private readonly npcs: NpcState[] = [];
   private readonly flowers: FlowerState[] = [];
+  private readonly crystals: CrystalPickupState[] = [];
   private readonly triggers: TriggerState[] = [];
   private readonly occupiedActorTiles = new Set<string>();
+  private readonly collectedCrystalIds = new Set<string>();
   private readonly terrainTopGeometry = createTerrainTopGeometry();
   private readonly terrainSideGeometry = createTerrainSideGeometry();
   private readonly shadowGeometry = new CircleGeometry(0.26, 24);
@@ -1557,6 +1651,11 @@ export class ThreeIsoGame {
     FLOWER_DEPTH_PROXY_HEIGHT,
     FLOWER_DEPTH_PROXY_WIDTH
   );
+  private readonly crystalDepthProxyGeometry = new BoxGeometry(
+    CRYSTAL_WORLD_WIDTH * 0.45,
+    CRYSTAL_WORLD_HEIGHT * 0.8,
+    CRYSTAL_WORLD_WIDTH * 0.45
+  );
   private readonly actorShadowMaterial = new MeshBasicMaterial({
     color: 0x000000,
     transparent: true,
@@ -1567,6 +1666,13 @@ export class ThreeIsoGame {
   });
   private readonly attackDebugMaterial = new MeshBasicMaterial({
     color: 0xff4f4f,
+    transparent: true,
+    opacity: 0.32,
+    depthWrite: false,
+    depthTest: false
+  });
+  private readonly interactionDebugMaterial = new MeshBasicMaterial({
+    color: 0x43ff72,
     transparent: true,
     opacity: 0.32,
     depthWrite: false,
@@ -1635,6 +1741,10 @@ export class ThreeIsoGame {
   private readonly ambientLight = new AmbientLight(0xffffff, DEFAULT_AMBIENT_INTENSITY);
   private readonly sunLight = new DirectionalLight(0xfff1d6, DEFAULT_SUN_INTENSITY);
   private readonly attackDebugMesh = new Mesh(this.attackDebugGeometry, this.attackDebugMaterial);
+  private readonly interactionDebugMesh = new Mesh(
+    this.attackDebugGeometry,
+    this.interactionDebugMaterial
+  );
   private shadowQuality = DEFAULT_SHADOW_QUALITY;
   private heightTintStrength = DEFAULT_HEIGHT_TINT_STRENGTH;
   private terrainTopEdgeBandBrightness = DEFAULT_TERRAIN_TOP_EDGE_BAND_BRIGHTNESS;
@@ -1669,11 +1779,13 @@ export class ThreeIsoGame {
   private lastFrameTime = performance.now();
   private attackCooldownTimer = 0;
   private activeAttack: ActiveAttackState | null = null;
+  private activePlainInteraction: ActivePlainInteractionState | null = null;
   private teleportArmed = true;
   private teleportTransition: TeleportTransitionState | null = null;
   private screenFlash: ScreenFlashState | null = null;
   private screenShake: ScreenShakeState | null = null;
   private playerOpacity = 1;
+  private crystalCount = INITIAL_CRYSTAL_COUNT;
 
   private readonly player: PlayerState = {
     x: OVERWORLD_SPAWN.x,
@@ -1690,7 +1802,8 @@ export class ThreeIsoGame {
     hudStatus: HTMLDivElement,
     compass: HTMLDivElement,
     characterImage: HTMLImageElement,
-    flowerImage: HTMLImageElement
+    flowerImage: HTMLImageElement,
+    crystalSheetImage: HTMLImageElement
   ) {
     this.root = root;
     this.hudStatus = hudStatus;
@@ -1720,6 +1833,26 @@ export class ThreeIsoGame {
           'flower frame'
         )
     );
+    this.crystalFrameTexture = loadFrameTexture(
+      crystalSheetImage,
+      CRYSTAL_SHEET_FRAME_X,
+      CRYSTAL_SHEET_FRAME_Y,
+      CRYSTAL_SHEET_CELL_SIZE,
+      CRYSTAL_SHEET_CELL_SIZE,
+      'crystal pickup'
+    );
+    const crystalCounterIcon = document.createElement('img');
+    crystalCounterIcon.alt = '';
+    crystalCounterIcon.src = getFrameDataUrl(
+      crystalSheetImage,
+      CRYSTAL_SHEET_FRAME_X,
+      CRYSTAL_SHEET_FRAME_Y,
+      CRYSTAL_SHEET_CELL_SIZE,
+      CRYSTAL_SHEET_CELL_SIZE
+    );
+    this.crystalCounterElement.className = 'crystal-counter';
+    this.crystalCounterElement.append(this.crystalCounterValue, crystalCounterIcon);
+    this.updateCrystalCounter();
 
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x000000, 0);
@@ -1731,6 +1864,7 @@ export class ThreeIsoGame {
     this.root.appendChild(this.actorLabelLayer);
     this.screenFlashLayer.className = 'screen-flash';
     this.root.appendChild(this.screenFlashLayer);
+    this.root.appendChild(this.crystalCounterElement);
 
     this.scene.background = new Color('#111821');
     this.hiddenTerrainMatrix.makeScale(
@@ -1757,6 +1891,11 @@ export class ThreeIsoGame {
     this.attackDebugMesh.castShadow = false;
     this.attackDebugMesh.receiveShadow = false;
     this.actorGroup.add(this.attackDebugMesh);
+    this.interactionDebugMesh.visible = false;
+    this.interactionDebugMesh.renderOrder = ACTOR_SPRITE_RENDER_ORDER + 5;
+    this.interactionDebugMesh.castShadow = false;
+    this.interactionDebugMesh.receiveShadow = false;
+    this.actorGroup.add(this.interactionDebugMesh);
 
     this.buildTerrain();
 
@@ -1774,6 +1913,7 @@ export class ThreeIsoGame {
     this.actorGroup.add(this.shadowMesh);
     this.spawnNpcs();
     this.spawnFlowers();
+    this.spawnCrystals();
     this.spawnTriggers();
     this.refreshActorDepthProxyScales();
 
@@ -1783,6 +1923,8 @@ export class ThreeIsoGame {
     this.updateNpcVisuals();
     this.updateFlowerActivity();
     this.updateFlowerVisuals();
+    this.updateCrystalActivity();
+    this.updateCrystalVisuals();
     this.updateTriggerActivity();
     this.updateTriggerVisuals();
     this.updatePlayerVisuals();
@@ -2062,7 +2204,7 @@ export class ThreeIsoGame {
   };
 
   private tryStartPlayerAttack(clientX: number, clientY: number): void {
-    if (this.activeAttack || this.attackCooldownTimer > 0) {
+    if (this.activeAttack || this.activePlainInteraction || this.attackCooldownTimer > 0) {
       return;
     }
 
@@ -2080,7 +2222,7 @@ export class ThreeIsoGame {
   }
 
   private tryStartPlayerAttackInFacingDirection(): void {
-    if (this.activeAttack || this.attackCooldownTimer > 0) {
+    if (this.activeAttack || this.activePlainInteraction || this.attackCooldownTimer > 0) {
       return;
     }
 
@@ -2093,6 +2235,22 @@ export class ThreeIsoGame {
       facingDirectionIndex: this.currentDirection
     };
     this.updateAttackDebugVisual();
+  }
+
+  private tryStartPlayerInteractionInFacingDirection(): void {
+    if (this.activeAttack || this.activePlainInteraction) {
+      return;
+    }
+
+    const worldDirection = this.getAttackWorldDirectionFromFacing(this.currentDirection);
+    this.activePlainInteraction = {
+      profile: DEFAULT_PLAIN_INTERACTION_PROFILE,
+      worldDirection,
+      remaining: DEFAULT_PLAIN_INTERACTION_PROFILE.duration,
+      hitTarget: false,
+      facingDirectionIndex: this.currentDirection
+    };
+    this.updateInteractionDebugVisual();
   }
 
   private getAttackWorldDirectionFromPointer(clientX: number, clientY: number): Vec2 {
@@ -2139,7 +2297,7 @@ export class ThreeIsoGame {
   }
 
   private updatePlayerFacingFromInputIntent(): void {
-    if (this.activeAttack) {
+    if (this.activeAttack || this.activePlainInteraction) {
       return;
     }
 
@@ -2463,25 +2621,45 @@ export class ThreeIsoGame {
       return;
     }
 
-    const centerOffset = PLAYER_COLLISION_RADIUS + this.activeAttack.profile.reach * 0.5;
-    const centerX = this.player.x + this.activeAttack.worldDirection.x * centerOffset;
-    const centerZ = this.player.y + this.activeAttack.worldDirection.y * centerOffset;
-    this.attackDebugMesh.visible = true;
-    this.attackDebugMesh.position.set(
+    this.updateActionDebugMesh(
+      this.attackDebugMesh,
+      this.activeAttack.profile,
+      this.activeAttack.worldDirection,
+      ATTACK_HURTBOX_ELEVATION
+    );
+  }
+
+  private updateInteractionDebugVisual(): void {
+    if (!this.activePlainInteraction || !this.showAttackHurtbox) {
+      this.interactionDebugMesh.visible = false;
+      return;
+    }
+
+    this.updateActionDebugMesh(
+      this.interactionDebugMesh,
+      this.activePlainInteraction.profile,
+      this.activePlainInteraction.worldDirection,
+      INTERACTION_HURTBOX_ELEVATION
+    );
+  }
+
+  private updateActionDebugMesh(
+    mesh: Mesh,
+    profile: AttackProfile,
+    worldDirection: Vec2,
+    elevation: number
+  ): void {
+    const centerOffset = PLAYER_COLLISION_RADIUS + profile.reach * 0.5;
+    const centerX = this.player.x + worldDirection.x * centerOffset;
+    const centerZ = this.player.y + worldDirection.y * centerOffset;
+    mesh.visible = true;
+    mesh.position.set(
       centerX,
-      this.player.z + this.activeAttack.profile.height * 0.5 + ATTACK_HURTBOX_ELEVATION,
+      this.player.z + profile.height * 0.5 + elevation,
       centerZ
     );
-    this.attackDebugMesh.rotation.set(
-      0,
-      Math.atan2(this.activeAttack.worldDirection.x, this.activeAttack.worldDirection.y),
-      0
-    );
-    this.attackDebugMesh.scale.set(
-      this.activeAttack.profile.width,
-      this.activeAttack.profile.height,
-      this.activeAttack.profile.reach
-    );
+    mesh.rotation.set(0, Math.atan2(worldDirection.x, worldDirection.y), 0);
+    mesh.scale.set(profile.width, profile.height, profile.reach);
   }
 
   private createActorDepthProxy(geometry: BoxGeometry): Mesh {
@@ -2511,6 +2689,10 @@ export class ThreeIsoGame {
 
     for (const flower of this.flowers) {
       flower.depthProxy.scale.set(widthScale, heightScale, widthScale);
+    }
+
+    for (const crystal of this.crystals) {
+      crystal.depthProxy.scale.set(widthScale, heightScale, widthScale);
     }
   }
 
@@ -2578,6 +2760,10 @@ export class ThreeIsoGame {
   private setActorLabelVisible(label: HTMLDivElement, visible: boolean): void {
     label.hidden = !visible;
     label.style.display = visible ? '-webkit-box' : 'none';
+  }
+
+  private updateCrystalCounter(): void {
+    this.crystalCounterValue.textContent = String(this.crystalCount);
   }
 
   private removeActorLabelElement(label: HTMLDivElement): void {
@@ -2799,7 +2985,8 @@ export class ThreeIsoGame {
           STURDY_NPC_TINT,
           spawnSeedBase + 2900 + index * 17,
           config.displayName,
-          config.onHitInteraction ?? null
+          config.onHitInteraction ?? null,
+          config.onPlainInteraction ?? null
         )
       );
     };
@@ -2888,6 +3075,100 @@ export class ThreeIsoGame {
     }
   }
 
+  private spawnCrystals(): void {
+    if (this.map.id !== 'overworld') {
+      return;
+    }
+
+    const spawnSeedBase = this.getMapSpawnSeedBase();
+    const addCrystal = (candidate: Vec2, id: string): boolean => {
+      const tileX = Math.floor(candidate.x);
+      const tileY = Math.floor(candidate.y);
+      const tileKey = `${tileX}:${tileY}`;
+
+      if (
+        tileX < 0 ||
+        tileY < 0 ||
+        tileX >= this.map.width ||
+        tileY >= this.map.height ||
+        this.isTeleportTile(tileX, tileY) ||
+        this.occupiedActorTiles.has(tileKey)
+      ) {
+        return false;
+      }
+
+      this.occupiedActorTiles.add(tileKey);
+
+      if (this.collectedCrystalIds.has(id)) {
+        return true;
+      }
+
+      const spriteMaterial = this.createActorSpriteMaterial(
+        this.crystalFrameTexture,
+        '#ffffff',
+        true
+      );
+      const sprite = this.createBillboardSprite(
+        spriteMaterial,
+        CRYSTAL_WORLD_WIDTH,
+        CRYSTAL_WORLD_HEIGHT
+      );
+      const depthProxy = this.createActorDepthProxy(this.crystalDepthProxyGeometry);
+      const shadow = this.createActorShadow();
+      const displayName = 'Crystal';
+      const labelElement = this.createActorLabelElement(displayName);
+      sprite.visible = false;
+      depthProxy.visible = false;
+      shadow.visible = false;
+      this.actorDepthGroup.add(depthProxy);
+      this.actorGroup.add(sprite);
+      this.actorGroup.add(shadow);
+
+      this.crystals.push({
+        id,
+        x: candidate.x,
+        y: candidate.y,
+        z: this.getSupportHeight(candidate.x, candidate.y),
+        active: false,
+        collected: false,
+        displayName,
+        labelRangeFactor: CRYSTAL_LABEL_RANGE_FACTOR,
+        labelFontSizeFactor: CRYSTAL_LABEL_FONT_SIZE_FACTOR,
+        labelElement,
+        spriteMaterial,
+        sprite,
+        depthProxy,
+        shadow
+      });
+      return true;
+    };
+
+    if (this.currentOverworldSeed === MAP_GENERATION_SEED) {
+      addCrystal(
+        { x: OVERWORLD_SPAWN.x + 2, y: OVERWORLD_SPAWN.y },
+        `crystal-startup-${MAP_GENERATION_SEED}`
+      );
+    }
+
+    const candidates = this.collectNpcSpawnCandidates(false);
+    this.shuffleSpawnCandidates(candidates, spawnSeedBase + 7301);
+    let placed = 0;
+
+    for (const candidate of candidates) {
+      const tileX = Math.floor(candidate.x);
+      const tileY = Math.floor(candidate.y);
+      const id = `crystal-${spawnSeedBase}-${tileX}-${tileY}`;
+
+      if (addCrystal(candidate, id)) {
+        placed += 1;
+      }
+
+      if (placed >= OVERWORLD_CRYSTAL_PICKUP_COUNT) {
+        break;
+      }
+    }
+  }
+
   private spawnTriggers(): void {
     this.map.spawns.fixedTriggers.forEach((config, index) => {
       const tileX = Math.floor(config.x);
@@ -2950,6 +3231,14 @@ export class ThreeIsoGame {
       flower.spriteMaterial.dispose();
     }
 
+    for (const crystal of this.crystals) {
+      this.actorDepthGroup.remove(crystal.depthProxy);
+      this.actorGroup.remove(crystal.sprite);
+      this.actorGroup.remove(crystal.shadow);
+      this.removeActorLabelElement(crystal.labelElement);
+      crystal.spriteMaterial.dispose();
+    }
+
     for (const trigger of this.triggers) {
       this.actorGroup.remove(trigger.debugMesh);
       this.removeActorLabelElement(trigger.labelElement);
@@ -2957,6 +3246,7 @@ export class ThreeIsoGame {
 
     this.npcs.length = 0;
     this.flowers.length = 0;
+    this.crystals.length = 0;
     this.triggers.length = 0;
     this.occupiedActorTiles.clear();
   }
@@ -2965,6 +3255,7 @@ export class ThreeIsoGame {
     this.map = this.maps[mapId];
     this.clearMapActors();
     this.activeAttack = null;
+    this.activePlainInteraction = null;
     this.attackCooldownTimer = 0;
     this.player.x = clamp(
       targetX,
@@ -2985,13 +3276,16 @@ export class ThreeIsoGame {
     this.buildTerrain();
     this.spawnNpcs();
     this.spawnFlowers();
+    this.spawnCrystals();
     this.spawnTriggers();
     this.refreshActorDepthProxyScales();
     this.updateNpcActivity();
     this.updateFlowerActivity();
+    this.updateCrystalActivity();
     this.updateTriggerActivity();
     this.updateNpcVisuals();
     this.updateFlowerVisuals();
+    this.updateCrystalVisuals();
     this.updateTriggerVisuals();
     this.updatePlayerVisuals();
     this.updateCamera(1 / 60, true);
@@ -3009,6 +3303,16 @@ export class ThreeIsoGame {
     this.maps.overworld = createOverworldMap(nextSeed, nextTeleportTile, true);
     this.updateHubWorldOverworldLink();
     this.updateHud();
+  }
+
+  private trySpendCrystalForWorldRegeneration(): boolean {
+    if (this.crystalCount <= 0) {
+      return false;
+    }
+
+    this.crystalCount -= 1;
+    this.updateCrystalCounter();
+    return true;
   }
 
   private createNextOverworldSeed(): number {
@@ -4163,6 +4467,52 @@ export class ThreeIsoGame {
     return overlapsActorLane && isFrontFacing && risesAboveFeet && intersectsActorHeight;
   }
 
+  private canFrontTerrainAffectActor(
+    block: TerrainBlockInstance,
+    actor: TerrainOcclusionActor,
+    basis: ScreenBasis
+  ): boolean {
+    const actorTopZ = actor.footZ + actor.bodyHeight;
+    const {
+      lateralRange,
+      frontMin,
+      frontMax,
+      minHeightAboveFeet,
+      actorHeightPadding
+    } = this.occlusionTuning;
+    const footprintPoints = [
+      { x: block.x, y: block.y },
+      { x: block.x + 1, y: block.y },
+      { x: block.x, y: block.y + 1 },
+      { x: block.x + 1, y: block.y + 1 }
+    ];
+    let minLateral = Infinity;
+    let maxLateral = -Infinity;
+    let minFrontness = Infinity;
+    let maxFrontness = -Infinity;
+
+    for (const point of footprintPoints) {
+      const deltaX = point.x - actor.x;
+      const deltaY = point.y - actor.y;
+      const lateral = deltaX * basis.rightNorm.x + deltaY * basis.rightNorm.y;
+      const frontness = -(deltaX * basis.topNorm.x + deltaY * basis.topNorm.y);
+      minLateral = Math.min(minLateral, lateral);
+      maxLateral = Math.max(maxLateral, lateral);
+      minFrontness = Math.min(minFrontness, frontness);
+      maxFrontness = Math.max(maxFrontness, frontness);
+    }
+
+    const blockTop = block.z + 1;
+    const blockBottom = block.z;
+    const overlapsActorLane = maxLateral >= -lateralRange && minLateral <= lateralRange;
+    const isNearActorDepth =
+      maxFrontness >= frontMin - 2.5 && minFrontness <= frontMax + 3.5;
+    const risesAboveFeet = blockTop > actor.footZ + minHeightAboveFeet + OCCLUSION_HEIGHT_EPSILON;
+    const intersectsActorHeight = blockBottom < actorTopZ + actorHeightPadding;
+
+    return overlapsActorLane && isNearActorDepth && risesAboveFeet && intersectsActorHeight;
+  }
+
   private getTerrainOcclusionSearchRadius(): number {
     const { lateralRange, frontMin, frontMax } = this.occlusionTuning;
     const lateralLimit = lateralRange + 2.5;
@@ -4173,7 +4523,8 @@ export class ThreeIsoGame {
   private markTerrainOccludersForActor(
     actor: TerrainOcclusionActor,
     basis: ScreenBasis,
-    frontBlocks: Set<TerrainBlockInstance>
+    frontBlocks: Set<TerrainBlockInstance>,
+    canAddBlock: (block: TerrainBlockInstance) => boolean = () => true
   ): void {
     const searchRadius = this.getTerrainOcclusionSearchRadius();
     const minTileX = Math.max(0, Math.floor(actor.x) - searchRadius);
@@ -4200,7 +4551,9 @@ export class ThreeIsoGame {
               basis
             )
           ) {
-            frontBlocks.add(block);
+            if (canAddBlock(block)) {
+              frontBlocks.add(block);
+            }
           }
         }
       }
@@ -4209,18 +4562,23 @@ export class ThreeIsoGame {
 
   private updateTerrainOcclusion(): void {
     const basis = this.getPlaneBasis();
+    const playerActor = {
+      x: this.player.x,
+      y: this.player.y,
+      footZ: this.player.z / this.blockHeightScale,
+      bodyHeight: PLAYER_BODY_HEIGHT / this.blockHeightScale
+    };
+    const playerFrontBlocks = new Set<TerrainBlockInstance>();
     const frontBlocks = new Set<TerrainBlockInstance>();
 
-    this.markTerrainOccludersForActor(
-      {
-        x: this.player.x,
-        y: this.player.y,
-        footZ: this.player.z / this.blockHeightScale,
-        bodyHeight: PLAYER_BODY_HEIGHT / this.blockHeightScale
-      },
-      basis,
-      frontBlocks
-    );
+    this.markTerrainOccludersForActor(playerActor, basis, playerFrontBlocks);
+
+    for (const block of playerFrontBlocks) {
+      frontBlocks.add(block);
+    }
+
+    const canAddNonPlayerOccluder = (block: TerrainBlockInstance): boolean =>
+      playerFrontBlocks.has(block) || !this.canFrontTerrainAffectActor(block, playerActor, basis);
 
     for (const npc of this.npcs) {
       if (!npc.active) {
@@ -4235,7 +4593,8 @@ export class ThreeIsoGame {
           bodyHeight: NPC_BODY_HEIGHT / this.blockHeightScale
         },
         basis,
-        frontBlocks
+        frontBlocks,
+        canAddNonPlayerOccluder
       );
     }
 
@@ -4252,7 +4611,8 @@ export class ThreeIsoGame {
           bodyHeight: FLOWER_BODY_HEIGHT / this.blockHeightScale
         },
         basis,
-        frontBlocks
+        frontBlocks,
+        canAddNonPlayerOccluder
       );
     }
 
@@ -4509,6 +4869,25 @@ export class ThreeIsoGame {
     this.updateAttackDebugVisual();
   }
 
+  private updateActivePlainInteraction(dt: number): void {
+    if (!this.activePlainInteraction) {
+      this.updateInteractionDebugVisual();
+      return;
+    }
+
+    this.activePlainInteraction.remaining = Math.max(
+      0,
+      this.activePlainInteraction.remaining - dt
+    );
+    this.applyPlainInteractionHits(this.activePlainInteraction);
+
+    if (this.activePlainInteraction?.remaining === 0) {
+      this.activePlainInteraction = null;
+    }
+
+    this.updateInteractionDebugVisual();
+  }
+
   private applyAttackHits(attack: ActiveAttackState): void {
     if (attack.profile.affectsNpcs) {
       for (const npc of this.npcs) {
@@ -4583,9 +4962,124 @@ export class ThreeIsoGame {
     }
   }
 
+  private applyPlainInteractionHits(interaction: ActivePlainInteractionState): void {
+    if (interaction.hitTarget) {
+      return;
+    }
+
+    let bestDistanceSq = Number.POSITIVE_INFINITY;
+    const bestHit: { run: (() => void) | null } = { run: null };
+
+    const considerTarget = (
+      targetX: number,
+      targetY: number,
+      targetFootZ: number,
+      targetRadius: number,
+      targetHeight: number,
+      onHit: () => void
+    ): void => {
+      if (
+        !this.isPointInsideActionBox(
+          interaction.profile,
+          interaction.worldDirection,
+          targetX,
+          targetY,
+          targetFootZ,
+          targetRadius,
+          targetHeight
+        )
+      ) {
+        return;
+      }
+
+      const dx = targetX - this.player.x;
+      const dy = targetY - this.player.y;
+      const distanceSq = dx * dx + dy * dy;
+      if (distanceSq < bestDistanceSq) {
+        bestDistanceSq = distanceSq;
+        bestHit.run = onHit;
+      }
+    };
+
+    for (const npc of this.npcs) {
+      if (!npc.active || !npc.onPlainInteraction) {
+        continue;
+      }
+
+      considerTarget(
+        npc.x,
+        npc.y,
+        npc.z,
+        NPC_COLLISION_RADIUS,
+        NPC_BODY_HEIGHT,
+        () => {
+          npc.touchFlashTimer = NPC_TOUCH_FLASH_TIME;
+          this.handleActorPlainInteraction(npc.onPlainInteraction);
+        }
+      );
+    }
+
+    for (const flower of this.flowers) {
+      if (!flower.active || !flower.onPlainInteraction) {
+        continue;
+      }
+
+      considerTarget(
+        flower.x,
+        flower.y,
+        flower.z,
+        FLOWER_COLLISION_RADIUS,
+        FLOWER_BODY_HEIGHT,
+        () => {
+          flower.touchFlashTimer = NPC_TOUCH_FLASH_TIME;
+          this.handleActorPlainInteraction(flower.onPlainInteraction);
+        }
+      );
+    }
+
+    for (const trigger of this.triggers) {
+      if (!trigger.active || !trigger.onPlainInteraction) {
+        continue;
+      }
+
+      considerTarget(
+        trigger.x,
+        trigger.y,
+        trigger.z,
+        Math.max(trigger.width, trigger.depth) * 0.5,
+        trigger.height,
+        () => {
+          trigger.touchFlashTimer = NPC_TOUCH_FLASH_TIME;
+          this.handleActorPlainInteraction(trigger.onPlainInteraction);
+        }
+      );
+    }
+
+    if (!bestHit.run) {
+      return;
+    }
+
+    interaction.hitTarget = true;
+    bestHit.run();
+    this.activePlainInteraction = null;
+  }
+
   private handleActorHitInteraction(interaction: ActorHitInteraction | null): void {
     switch (interaction) {
       case 'regenerateOverworld':
+        return;
+      default:
+        return;
+    }
+  }
+
+  private handleActorPlainInteraction(interaction: ActorPlainInteraction | null): void {
+    switch (interaction) {
+      case 'regenerateOverworld':
+        if (!this.trySpendCrystalForWorldRegeneration()) {
+          return;
+        }
+
         this.playScreenShake(
           WORLDSMITH_SHAKE_STRENGTH,
           WORLDSMITH_SHAKE_DURATION,
@@ -4593,6 +5087,8 @@ export class ThreeIsoGame {
           screenShakeEaseInOutEnvelope
         );
         this.regenerateOverworld();
+        return;
+      case 'inspect':
         return;
       default:
         return;
@@ -4613,7 +5109,17 @@ export class ThreeIsoGame {
       return;
     }
 
-    if (!this.isPointInsideActiveAttack(attack, targetX, targetY, targetFootZ, targetRadius, targetHeight)) {
+    if (
+      !this.isPointInsideActionBox(
+        attack.profile,
+        attack.worldDirection,
+        targetX,
+        targetY,
+        targetFootZ,
+        targetRadius,
+        targetHeight
+      )
+    ) {
       return;
     }
 
@@ -4621,34 +5127,35 @@ export class ThreeIsoGame {
     onHit();
   }
 
-  private isPointInsideActiveAttack(
-    attack: ActiveAttackState,
+  private isPointInsideActionBox(
+    profile: AttackProfile,
+    worldDirection: Vec2,
     targetX: number,
     targetY: number,
     targetFootZ: number,
     targetRadius: number,
     targetHeight: number
   ): boolean {
-    const centerOffset = PLAYER_COLLISION_RADIUS + attack.profile.reach * 0.5;
-    const centerX = this.player.x + attack.worldDirection.x * centerOffset;
-    const centerY = this.player.y + attack.worldDirection.y * centerOffset;
+    const centerOffset = PLAYER_COLLISION_RADIUS + profile.reach * 0.5;
+    const centerX = this.player.x + worldDirection.x * centerOffset;
+    const centerY = this.player.y + worldDirection.y * centerOffset;
     const sideAxis = {
-      x: -attack.worldDirection.y,
-      y: attack.worldDirection.x
+      x: -worldDirection.y,
+      y: worldDirection.x
     };
     const deltaX = targetX - centerX;
     const deltaY = targetY - centerY;
-    const localForward = deltaX * attack.worldDirection.x + deltaY * attack.worldDirection.y;
+    const localForward = deltaX * worldDirection.x + deltaY * worldDirection.y;
     const localSide = deltaX * sideAxis.x + deltaY * sideAxis.y;
-    const halfReach = attack.profile.reach * 0.5 + targetRadius;
-    const halfWidth = attack.profile.width * 0.5 + targetRadius;
+    const halfReach = profile.reach * 0.5 + targetRadius;
+    const halfWidth = profile.width * 0.5 + targetRadius;
 
     if (Math.abs(localForward) > halfReach || Math.abs(localSide) > halfWidth) {
       return false;
     }
 
     const attackBottom = this.player.z;
-    const attackTop = attackBottom + attack.profile.height;
+    const attackTop = attackBottom + profile.height;
     const targetTop = targetFootZ + targetHeight;
     return targetFootZ <= attackTop && targetTop >= attackBottom;
   }
@@ -4701,6 +5208,7 @@ export class ThreeIsoGame {
   private update(dt: number): void {
     const jumpPressed = this.input.consumeJump();
     const attackPressed = this.input.consumeAttack();
+    const interactPressed = this.input.consumeInteract();
     const rotateDelta = this.input.consumeRotate();
     const freeCameraToggled = this.input.consumeFreeCameraToggle();
 
@@ -4728,6 +5236,10 @@ export class ThreeIsoGame {
 
     if (attackPressed) {
       this.tryStartPlayerAttackInFacingDirection();
+    }
+
+    if (interactPressed) {
+      this.tryStartPlayerInteractionInFacingDirection();
     }
 
     if (jumpPressed) {
@@ -4871,15 +5383,19 @@ export class ThreeIsoGame {
     this.updateFlowerActivity();
     this.updateFlowers(dt);
     this.updateFlowerTouchFeedback();
+    this.updateCrystalActivity();
+    this.updateCrystalPickups();
     this.updateTriggerActivity();
     this.updateTriggers(dt);
     this.updateTriggerTouchFeedback();
     this.updateActiveAttack(dt);
+    this.updateActivePlainInteraction(dt);
     this.updateScreenEffects(dt);
     this.updatePlayerAnimation(dt);
     this.updatePlayerVisuals();
     this.updateNpcVisuals();
     this.updateFlowerVisuals();
+    this.updateCrystalVisuals();
     this.updateTriggerVisuals();
     this.updateCamera(dt, false);
     this.updateActorLabels();
@@ -4896,6 +5412,8 @@ export class ThreeIsoGame {
 
     if (this.activeAttack) {
       this.currentDirection = this.activeAttack.facingDirectionIndex;
+    } else if (this.activePlainInteraction) {
+      this.currentDirection = this.activePlainInteraction.facingDirectionIndex;
     } else {
       this.updatePlayerFacingFromInputIntent();
     }
@@ -4947,6 +5465,24 @@ export class ThreeIsoGame {
       flower.active = dx * dx + dy * dy <= aliveRadiusSq;
       if (flower.active) {
         flower.z = this.getSupportHeight(flower.x, flower.y);
+      }
+    }
+  }
+
+  private updateCrystalActivity(): void {
+    const aliveRadiusSq = ACTOR_ALIVE_RADIUS * ACTOR_ALIVE_RADIUS;
+
+    for (const crystal of this.crystals) {
+      if (crystal.collected) {
+        crystal.active = false;
+        continue;
+      }
+
+      const dx = crystal.x - this.player.x;
+      const dy = crystal.y - this.player.y;
+      crystal.active = dx * dx + dy * dy <= aliveRadiusSq;
+      if (crystal.active) {
+        crystal.z = this.getSupportHeight(crystal.x, crystal.y);
       }
     }
   }
@@ -5106,6 +5642,30 @@ export class ThreeIsoGame {
     }
   }
 
+  private updateCrystalPickups(): void {
+    const touchRadius = PLAYER_COLLISION_RADIUS + CRYSTAL_COLLISION_RADIUS;
+    const touchRadiusSq = touchRadius * touchRadius;
+
+    for (const crystal of this.crystals) {
+      if (!crystal.active || crystal.collected) {
+        continue;
+      }
+
+      const dx = crystal.x - this.player.x;
+      const dy = crystal.y - this.player.y;
+
+      if (dx * dx + dy * dy > touchRadiusSq) {
+        continue;
+      }
+
+      crystal.collected = true;
+      crystal.active = false;
+      this.collectedCrystalIds.add(crystal.id);
+      this.crystalCount += 1;
+      this.updateCrystalCounter();
+    }
+  }
+
   private updateTriggerTouchFeedback(): void {
     for (const trigger of this.triggers) {
       if (!trigger.active) {
@@ -5174,6 +5734,7 @@ export class ThreeIsoGame {
     this.shadowMesh.scale.setScalar(shadowScale);
     this.shadowMesh.renderOrder = playerRenderOrder - 1;
     this.updateAttackDebugVisual();
+    this.updateInteractionDebugVisual();
 
     this.updateTerrainOcclusion();
   }
@@ -5276,6 +5837,46 @@ export class ThreeIsoGame {
     }
   }
 
+  private updateCrystalVisuals(): void {
+    const proxyHeight = this.getActorProxyDimensions(
+      CRYSTAL_WORLD_WIDTH * 0.45,
+      CRYSTAL_WORLD_HEIGHT * 0.8
+    ).height;
+
+    for (const crystal of this.crystals) {
+      crystal.depthProxy.visible = crystal.active;
+      crystal.sprite.visible = crystal.active;
+      crystal.shadow.visible = crystal.active;
+
+      if (!crystal.active) {
+        continue;
+      }
+
+      crystal.spriteMaterial.map = this.crystalFrameTexture;
+      crystal.spriteMaterial.needsUpdate = true;
+
+      this.setActorDepthProxyPosition(
+        crystal.depthProxy,
+        crystal.x,
+        crystal.z,
+        crystal.y,
+        proxyHeight
+      );
+      this.setActorSpritePosition(
+        crystal.sprite,
+        crystal.x,
+        crystal.z,
+        crystal.y,
+        DEPTH_TESTED_SPRITE_CAMERA_BIAS_MULTIPLIER
+      );
+      const crystalRenderOrder = this.getActorRenderOrder(crystal.x, crystal.y, crystal.z, 1);
+      crystal.sprite.renderOrder = crystalRenderOrder;
+      crystal.shadow.position.set(crystal.x, crystal.z + 0.01, crystal.y);
+      crystal.shadow.scale.setScalar(CRYSTAL_SHADOW_SCALE);
+      crystal.shadow.renderOrder = crystalRenderOrder - 1;
+    }
+  }
+
   private updateTriggerVisuals(): void {
     for (const trigger of this.triggers) {
       trigger.debugMesh.visible = this.showTriggerHitboxes;
@@ -5320,6 +5921,19 @@ export class ThreeIsoGame {
         flower.z + FLOWER_WORLD_HEIGHT + 0.12,
         flower.labelRangeFactor,
         flower.labelFontSizeFactor
+      );
+    }
+
+    for (const crystal of this.crystals) {
+      this.updateActorLabel(
+        crystal.labelElement,
+        crystal.displayName,
+        crystal.active && !crystal.collected,
+        crystal.x,
+        crystal.y,
+        crystal.z + CRYSTAL_WORLD_HEIGHT + 0.08,
+        crystal.labelRangeFactor,
+        crystal.labelFontSizeFactor
       );
     }
 

@@ -2,6 +2,7 @@ import './style.css';
 import { ThreeIsoGame } from './three-game';
 import charactersUrl from '../../../characters.png?url';
 import flowersUrl from '../../../Flowers/Flowers_With_Outline_Spritesheet.png?url';
+import crystalSheetUrl from '../../../16x16 Assorted RPG Icons/16x16 Assorted RPG Icons/pixelquest16-july-2025-cave.png?url';
 
 const root = document.querySelector<HTMLDivElement>('#app');
 
@@ -17,6 +18,7 @@ hud.innerHTML = `
     <strong>Move:</strong> WASD or arrows<br />
     <strong>Jump:</strong> Space<br />
     <strong>Attack:</strong> Click or tap Shift<br />
+    <strong>Interact:</strong> E<br />
     <strong>Rotate View:</strong> Tab / Shift+Tab<br />
     <strong>Debug Free Camera:</strong> \` (toggle), then drag with left mouse<br />
     We are now in the Three.js migration pass: real 3D terrain, an orthographic camera, and billboard actor sprites.
@@ -135,11 +137,19 @@ const loadImage = async (src: string): Promise<HTMLImageElement> =>
     image.src = src;
   });
 
-const [charactersImage, flowersImage] = await Promise.all([
+const [charactersImage, flowersImage, crystalSheetImage] = await Promise.all([
   loadImage(charactersUrl),
-  loadImage(flowersUrl)
+  loadImage(flowersUrl),
+  loadImage(crystalSheetUrl)
 ]);
-const game = new ThreeIsoGame(root, hudStatus, compass, charactersImage, flowersImage);
+const game = new ThreeIsoGame(
+  root,
+  hudStatus,
+  compass,
+  charactersImage,
+  flowersImage,
+  crystalSheetImage
+);
 
 let fpsFrames = 0;
 let fpsWindowStart = performance.now();

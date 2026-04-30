@@ -7,7 +7,8 @@ This is a practical plan for friendly online co-op with one player hosting a Nod
 - Two players can join the same overworld/hub session over the internet or LAN.
 - One player hosts a small Node server; both players run the Electron game as clients.
 - The host controls the current world seed, teleport tile, world-factor profile, and shared interaction events.
-- Each client sees the other player moving smoothly, facing, jumping, attacking, teleporting, and causing hit/flash animations.
+- Each client sees the other player moving smoothly, facing, jumping, attacking, interacting, teleporting, and causing hit/flash animations.
+- Crystals are a shared party inventory resource: any player can pick them up, and any player can spend them.
 - World regeneration happens once on the host/server and every client rebuilds the same deterministic world from the same seed data.
 
 ## Recommended Architecture
@@ -26,8 +27,9 @@ The server keeps a lightweight room state:
 - connected players: id, display name, map id, position, velocity, facing, grounded state, current animation/action
 - current overworld seed and teleport tile
 - current map id for each player
-- shared actors: NPCs, flowers, and triggers with stable ids, names, map id, position, velocity/knockback, active flash timers, and interaction flags
-- short-lived events: attacks, hit flashes, knockback starts, trigger touches, teleport starts/finishes, screen effects, overworld regeneration
+- shared inventory: current crystal balance
+- shared actors: NPCs, flowers, crystals, and triggers with stable ids, names, map id, position, velocity/knockback, active flash timers, pickup state, and interaction flags
+- short-lived events: attacks, plain interactions, hit flashes, knockback starts, trigger touches, crystal pickups/spends, teleport starts/finishes, screen effects, overworld regeneration
 
 For trusted co-op, player movement can be client-authoritative:
 
@@ -43,6 +45,7 @@ The server should still own session-level state, because that prevents accidenta
 - deriving/spawning actor ids and names from deterministic map generation
 - announcing map transitions
 - deciding/broadcasting shared actor interaction results
+- deciding/broadcasting shared inventory changes
 - ordering interaction events by server time
 - sending initial room snapshots to late joiners
 
@@ -57,7 +60,9 @@ type ClientMessage =
   | { type: 'hello'; name: string; protocolVersion: number }
   | { type: 'playerSnapshot'; seq: number; clientTime: number; mapId: string; x: number; y: number; z: number; vx: number; vy: number; vz: number; grounded: boolean; facing: number }
   | { type: 'attack'; seq: number; clientTime: number; mapId: string; x: number; y: number; z: number; directionX: number; directionY: number; facing: number }
+  | { type: 'interact'; seq: number; clientTime: number; mapId: string; x: number; y: number; z: number; directionX: number; directionY: number; facing: number }
   | { type: 'actorTouched'; clientTime: number; actorId: string; actorKind: 'npc' | 'flower' | 'trigger' }
+  | { type: 'crystalPickedUp'; clientTime: number; actorId: string }
   | { type: 'teleport'; clientTime: number; targetMapId: string; targetX: number; targetY: number }
   | { type: 'regenerateOverworld'; clientTime: number };
 ```
@@ -71,8 +76,10 @@ type ServerMessage =
   | { type: 'playerLeft'; serverTime: number; playerId: string }
   | { type: 'playerSnapshot'; serverTime: number; player: NetworkPlayerState }
   | { type: 'attack'; serverTime: number; playerId: string; event: NetworkAttackEvent }
+  | { type: 'interact'; serverTime: number; playerId: string; event: NetworkInteractionEvent }
   | { type: 'actorSnapshot'; serverTime: number; actor: NetworkActorState }
   | { type: 'actorEvent'; serverTime: number; actorId: string; event: NetworkActorEvent }
+  | { type: 'inventoryChanged'; serverTime: number; crystalCount: number }
   | { type: 'screenEffect'; serverTime: number; effect: NetworkScreenEffectEvent }
   | { type: 'worldChanged'; serverTime: number; world: NetworkWorldState }
   | { type: 'teleport'; serverTime: number; playerId: string; mapId: string; x: number; y: number };
@@ -84,6 +91,7 @@ type ServerMessage =
 interface NetworkWorldState {
   overworldSeed: number;
   overworldTeleportTile: { x: number; y: number };
+  crystalCount: number;
 }
 ```
 
@@ -94,7 +102,7 @@ Shared actors should have a compact state shape:
 ```ts
 interface NetworkActorState {
   id: string;
-  kind: 'npc-mobile' | 'npc-stationary' | 'npc-sturdy' | 'flower' | 'trigger';
+  kind: 'npc-mobile' | 'npc-stationary' | 'npc-sturdy' | 'flower' | 'crystal' | 'trigger';
   mapId: string;
   x: number;
   y: number;
@@ -104,6 +112,7 @@ interface NetworkActorState {
   facing?: number;
   displayName: string | null;
   variant?: number;
+  collected?: boolean;
   touchFlashUntil?: number;
   attackFlashUntil?: number;
 }
@@ -111,8 +120,13 @@ interface NetworkActorState {
 type NetworkActorEvent =
   | { type: 'touchFlash' }
   | { type: 'attackFlash'; knockbackX?: number; knockbackY?: number }
+  | { type: 'pickedUp'; playerId: string }
   | { type: 'triggerActivated' };
 ```
+
+Plain interaction is separate from attack. It uses the same directional box rules as attack, but is triggered by `E`, has its own short interaction event, and routes to plain interaction callbacks such as Worldsmith regeneration. The server should treat attack and interaction as separate event types because they can drive different callbacks on the same actor.
+
+Crystals are the first shared inventory item. The server owns the shared crystal balance, accepts one pickup/spend once, and broadcasts the resulting `inventoryChanged` count to every client. Crystal pickups should have stable actor ids and collected state so late joiners do not see already-collected crystals.
 
 Screen effects should be explicit network events, not hidden side effects of other messages:
 
@@ -163,9 +177,12 @@ The playable target must synchronize all visible shared actors:
 
 - player positions and facing
 - attack start events
-- NPC/flower/trigger ids and display names
-- NPC/flower/trigger positions
+- plain interaction start events
+- NPC/flower/crystal/trigger ids and display names
+- NPC/flower/crystal/trigger positions
 - NPC/flower knockback
+- crystal pickup state
+- shared crystal inventory count
 - touch flashes caused by any player colliding with an actor
 - attack flashes caused by any player hitting an actor
 - screen effects whose audience includes the local player
@@ -176,10 +193,10 @@ Actors should not remain client-local for real co-op. The server should create t
 
 For friendly trusted co-op, clients can still help with interaction detection:
 
-1. A client detects "I touched actor X" or "my attack hit actor X".
+1. A client detects "I touched actor X", "I picked up crystal X", "I interacted with actor X", or "my attack hit actor X".
 2. The client sends the actor id and event to the server.
-3. The server trusts it, updates that actor's flash/knockback state, and broadcasts the result.
-4. Every client plays the same flash, knockback, or trigger interaction.
+3. The server trusts it, updates actor flash/knockback/pickup state or shared inventory state, and broadcasts the result.
+4. Every client plays the same flash, knockback, pickup disappearance, trigger interaction, or inventory update.
 
 This keeps implementation simpler than fully server-authoritative collision while still making all visible results shared.
 
@@ -250,9 +267,10 @@ Result: two players can see each other move around smoothly.
 ### Phase 2: Shared World And Actor Spawn
 
 - Server sends current overworld seed and teleport tile on join.
+- Server sends the current shared crystal balance on join.
 - Client rebuilds overworld from server world state.
-- Server sends the full shared actor list for the player's current world: NPCs, flowers, and triggers.
-- Actor ids, names, flower variants, NPC kinds, trigger ids, and initial positions match for everyone.
+- Server sends the full shared actor list for the player's current world: NPCs, flowers, crystals, and triggers.
+- Actor ids, names, flower variants, NPC kinds, crystal collected flags, trigger ids, and initial positions match for everyone.
 - Server handles `regenerateOverworld` and broadcasts `worldChanged`.
 - Teleport events are broadcast so both clients agree which map each player is on.
 
@@ -261,13 +279,16 @@ Result: both players are in the same generated world, see the same actors, and s
 ### Phase 3: Shared Actor Motion And Interactions
 
 - Broadcast attack start events.
+- Broadcast plain interaction start events from `E`.
 - Render remote attack animations/hurtboxes.
+- Render remote interaction hints/hitboxes if debug visualization is enabled.
 - Server ticks mobile NPC wandering and broadcasts actor snapshots.
 - Broadcast touch flashes for NPCs, flowers, and triggers when any player collides with them.
 - Broadcast hit flashes and knockback for NPCs and flowers when any player attacks them.
-- Decide how to handle Worldsmith hits: server should accept the regenerate request once and broadcast the new world state.
+- Broadcast crystal pickups and the updated shared crystal balance.
+- Decide how to handle Worldsmith interactions: server should accept the regenerate request once, spend one shared crystal if available, and broadcast the new world state plus updated crystal balance.
 
-Result: players see the same actor positions, names, flashes, knockback, and interaction feedback.
+Result: players see the same actor positions, names, flashes, knockback, crystal inventory, pickups, and interaction feedback.
 
 ### Phase 4: Polish Actor Authority
 
