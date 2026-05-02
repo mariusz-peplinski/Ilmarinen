@@ -1,5 +1,6 @@
 import './style.css';
 import { ThreeIsoGame } from './three-game';
+import { NetworkClient } from './network/network-client';
 import charactersUrl from '../../../characters.png?url';
 import flowersUrl from '../../../Flowers/Flowers_With_Outline_Spritesheet.png?url';
 import crystalSheetUrl from '../../../16x16 Assorted RPG Icons/16x16 Assorted RPG Icons/pixelquest16-july-2025-cave.png?url';
@@ -47,6 +48,23 @@ const fpsCounter = document.createElement('div');
 fpsCounter.className = 'fps-counter';
 fpsCounter.textContent = 'FPS --';
 root.appendChild(fpsCounter);
+
+const networkPanel = document.createElement('div');
+networkPanel.className = 'network-panel';
+networkPanel.innerHTML = `
+  <h2>Multiplayer</h2>
+  <label class="network-field">
+    <span>Server</span>
+    <input id="network-url" type="text" value="ws://localhost:8787" spellcheck="false" />
+  </label>
+  <label class="network-field">
+    <span>Name</span>
+    <input id="network-name" type="text" value="Player" maxlength="24" spellcheck="false" />
+  </label>
+  <button id="network-toggle" type="button">Connect</button>
+  <div id="network-status" class="network-status">Offline</div>
+`;
+root.appendChild(networkPanel);
 
 const lightingPanel = document.createElement('div');
 lightingPanel.className = 'lighting-panel';
@@ -150,6 +168,110 @@ const game = new ThreeIsoGame(
   flowersImage,
   crystalSheetImage
 );
+
+const networkUrlInput = networkPanel.querySelector<HTMLInputElement>('#network-url');
+const networkNameInput = networkPanel.querySelector<HTMLInputElement>('#network-name');
+const networkToggle = networkPanel.querySelector<HTMLButtonElement>('#network-toggle');
+const networkStatus = networkPanel.querySelector<HTMLDivElement>('#network-status');
+
+if (!networkUrlInput || !networkNameInput || !networkToggle || !networkStatus) {
+  throw new Error('Expected multiplayer controls.');
+}
+
+const updateNetworkStatus = (text: string): void => {
+  networkStatus.textContent = text;
+  game.setNetworkStatusText(text);
+};
+
+const networkClient = new NetworkClient({
+  onStatusChange: (status, detail) => {
+    networkToggle.textContent = status === 'connected' || status === 'connecting'
+      ? 'Disconnect'
+      : 'Connect';
+    updateNetworkStatus(detail);
+
+    if (status === 'offline') {
+      game.setLocalNetworkPlayerId(null);
+      game.setRemotePlayers([]);
+    }
+  },
+  onMessage: (message) => {
+    switch (message.type) {
+      case 'welcome':
+        game.setLocalNetworkPlayerId(message.playerId);
+        game.applyNetworkWorldState(message.world);
+        game.setRemotePlayers(message.players);
+        for (const actor of message.actors) {
+          game.applyNetworkActorSnapshot(actor);
+        }
+        updateNetworkStatus(`Connected as ${message.playerId}`);
+        return;
+      case 'playerJoined':
+        game.upsertRemotePlayer(message.player);
+        return;
+      case 'playerLeft':
+        game.removeRemotePlayer(message.playerId);
+        return;
+      case 'playerSnapshot':
+        game.bufferRemotePlayerSnapshot(message.player);
+        return;
+      case 'worldChanged':
+        game.applyNetworkWorldState(message.world);
+        return;
+      case 'inventoryChanged':
+        game.applyNetworkCrystalCount(message.crystalCount);
+        return;
+      case 'actorEvent':
+        game.applyNetworkActorEvent(message.actorId, message.event);
+        return;
+      case 'attack':
+        game.applyNetworkAttack(message.playerId, message.event);
+        return;
+      case 'interact':
+        game.applyNetworkInteract(message.playerId, message.event);
+        return;
+      case 'screenEffect':
+        game.applyNetworkScreenEffect(message.effect);
+        return;
+      case 'teleport':
+        game.applyNetworkTeleport(message.playerId, message.mapId, message.x, message.y);
+        return;
+      case 'actorSnapshot':
+        game.applyNetworkActorSnapshot(message.actor);
+        return;
+    }
+  }
+});
+
+game.setNetworkEventHandlers({
+  isConnected: () => networkClient.connected,
+  sendAttack: (event) => networkClient.sendAttack(event),
+  sendInteract: (event) => networkClient.sendInteract(event),
+  sendActorTouched: (actorId, actorKind) => networkClient.sendActorTouched(actorId, actorKind),
+  sendCrystalPickedUp: (actorId) => networkClient.sendCrystalPickedUp(actorId),
+  sendTeleport: (targetMapId, targetX, targetY) =>
+    networkClient.sendTeleport(targetMapId, targetX, targetY),
+  sendRegenerateOverworld: () => networkClient.sendRegenerateOverworld()
+});
+
+let networkSeq = 0;
+window.setInterval(() => {
+  if (!networkClient.connected) {
+    return;
+  }
+
+  networkSeq += 1;
+  networkClient.sendPlayerSnapshot(game.createLocalPlayerSnapshot(networkSeq, performance.now()));
+}, 50);
+
+networkToggle.addEventListener('click', () => {
+  if (networkClient.active) {
+    networkClient.disconnect();
+    return;
+  }
+
+  networkClient.connect(networkUrlInput.value.trim(), networkNameInput.value.trim());
+});
 
 let fpsFrames = 0;
 let fpsWindowStart = performance.now();

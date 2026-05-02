@@ -27,10 +27,21 @@ import {
   DirectionalLight,
   BasicShadowMap
 } from 'three';
+import type {
+  ClientPlayerSnapshotMessage,
+  MapId as NetworkMapId,
+  NetworkActorEvent,
+  NetworkActorState,
+  NetworkAttackEvent,
+  NetworkInteractionEvent,
+  NetworkPlayerState,
+  NetworkScreenEffectEvent,
+  NetworkWorldState
+} from '../../shared/network-protocol';
 
 type MaterialKey = 'grass' | 'stone' | 'sand' | 'moss' | 'portal';
 type TerrainMaterialKey = Exclude<MaterialKey, 'portal'>;
-type MapId = 'overworld' | 'hubWorld';
+type MapId = NetworkMapId;
 type ActorPopulationFactor = 'flowers' | 'humans' | 'mixed';
 
 interface TerrainScaleFactor {
@@ -110,6 +121,41 @@ interface PlayerState {
   vy: number;
   vz: number;
   grounded: boolean;
+}
+
+interface NetworkGameEventHandlers {
+  isConnected: () => boolean;
+  sendAttack: (event: Omit<NetworkAttackEvent, 'seq' | 'clientTime'>) => void;
+  sendInteract: (event: Omit<NetworkInteractionEvent, 'seq' | 'clientTime'>) => void;
+  sendActorTouched: (actorId: string, actorKind: 'npc' | 'flower' | 'trigger') => void;
+  sendCrystalPickedUp: (actorId: string) => void;
+  sendTeleport: (targetMapId: MapId, targetX: number, targetY: number) => void;
+  sendRegenerateOverworld: () => void;
+}
+
+interface RemotePlayerSample extends NetworkPlayerState {
+  receivedAt: number;
+}
+
+interface RemotePlayerRenderState {
+  id: string;
+  displayName: string;
+  mapId: MapId;
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  grounded: boolean;
+  facing: number;
+  walkTime: number;
+  samples: RemotePlayerSample[];
+  labelElement: HTMLDivElement;
+  spriteMaterial: SpriteMaterial;
+  sprite: Sprite;
+  depthProxy: Mesh;
+  shadow: Mesh;
 }
 
 type NpcKind = 'mobile' | 'stationary' | 'sturdy';
@@ -430,6 +476,9 @@ const MAP_EDGE_PADDING = 0.02;
 const PLAYER_COLLISION_RADIUS = 0.2;
 const NPC_COLLISION_RADIUS = 0.18;
 const WALK_FRAME_TIME = 0.12;
+const REMOTE_PLAYER_INTERPOLATION_DELAY = 100;
+const REMOTE_PLAYER_EXTRAPOLATION_CAP = 150;
+const REMOTE_PLAYER_SAMPLE_LIMIT = 16;
 const TELEPORT_FADE_DURATION = 0.25;
 const TELEPORT_FLASH_DELAY = 0;
 const TELEPORT_FLASH_DURATION = 0.65;
@@ -1629,6 +1678,7 @@ export class ThreeIsoGame {
   private readonly flowers: FlowerState[] = [];
   private readonly crystals: CrystalPickupState[] = [];
   private readonly triggers: TriggerState[] = [];
+  private readonly remotePlayers = new Map<string, RemotePlayerRenderState>();
   private readonly occupiedActorTiles = new Set<string>();
   private readonly collectedCrystalIds = new Set<string>();
   private readonly terrainTopGeometry = createTerrainTopGeometry();
@@ -1786,6 +1836,9 @@ export class ThreeIsoGame {
   private screenShake: ScreenShakeState | null = null;
   private playerOpacity = 1;
   private crystalCount = INITIAL_CRYSTAL_COUNT;
+  private localNetworkPlayerId: string | null = null;
+  private networkStatusText = 'Offline';
+  private networkEvents: NetworkGameEventHandlers | null = null;
 
   private readonly player: PlayerState = {
     x: OVERWORLD_SPAWN.x,
@@ -2121,6 +2174,285 @@ export class ThreeIsoGame {
     };
   }
 
+  public setNetworkStatusText(status: string): void {
+    this.networkStatusText = status;
+    this.updateHud();
+  }
+
+  public setLocalNetworkPlayerId(playerId: string | null): void {
+    this.localNetworkPlayerId = playerId;
+  }
+
+  public setNetworkEventHandlers(handlers: NetworkGameEventHandlers | null): void {
+    this.networkEvents = handlers;
+  }
+
+  public get isNetworkConnected(): boolean {
+    return this.networkEvents?.isConnected() ?? false;
+  }
+
+  public createLocalPlayerSnapshot(
+    seq: number,
+    clientTime: number
+  ): ClientPlayerSnapshotMessage {
+    return {
+      type: 'playerSnapshot',
+      seq,
+      clientTime,
+      mapId: this.map.id,
+      x: this.player.x,
+      y: this.player.y,
+      z: this.player.z,
+      vx: this.player.vx,
+      vy: this.player.vy,
+      vz: this.player.vz,
+      grounded: this.player.grounded,
+      facing: this.currentDirection
+    };
+  }
+
+  public applyNetworkWorldState(world: NetworkWorldState): void {
+    const worldChanged =
+      this.currentOverworldSeed !== world.overworldSeed ||
+      this.currentOverworldTeleportTile.x !== world.overworldTeleportTile.x ||
+      this.currentOverworldTeleportTile.y !== world.overworldTeleportTile.y;
+    const collectedChanged =
+      world.collectedCrystalIds.length !== this.collectedCrystalIds.size ||
+      world.collectedCrystalIds.some((crystalId) => !this.collectedCrystalIds.has(crystalId));
+
+    this.currentOverworldSeed = world.overworldSeed;
+    this.currentOverworldTeleportTile = { ...world.overworldTeleportTile };
+    this.collectedCrystalIds.clear();
+    for (const crystalId of world.collectedCrystalIds) {
+      this.collectedCrystalIds.add(crystalId);
+    }
+    this.crystalCount = world.crystalCount;
+    this.updateCrystalCounter();
+    this.maps.overworld = createOverworldMap(
+      world.overworldSeed,
+      world.overworldTeleportTile,
+      world.overworldSeed !== MAP_GENERATION_SEED
+    );
+    this.maps.hubWorld = createHubWorldMap(world.overworldSeed, world.overworldTeleportTile);
+
+    if (worldChanged || collectedChanged) {
+      this.reloadCurrentMapPreservingPlayer();
+    } else {
+      this.updateHubWorldOverworldLink();
+    }
+
+    this.updateHud();
+  }
+
+  public applyNetworkActorSnapshot(actor: NetworkActorState): void {
+    if (actor.mapId !== this.map.id) {
+      return;
+    }
+
+    const nowMs = Date.now();
+    const touchTimer = actor.touchFlashUntil
+      ? Math.max(0, (actor.touchFlashUntil - nowMs) / 1000)
+      : 0;
+    const attackTimer = actor.attackFlashUntil
+      ? Math.max(0, (actor.attackFlashUntil - nowMs) / 1000)
+      : 0;
+
+    for (const npc of this.npcs) {
+      if (npc.id !== actor.id) {
+        continue;
+      }
+
+      npc.x = actor.x;
+      npc.y = actor.y;
+      npc.z = actor.z;
+      npc.vx = actor.vx;
+      npc.vy = actor.vy;
+      npc.currentDirection = actor.facing ?? npc.currentDirection;
+      npc.displayName = actor.displayName;
+      npc.labelElement.textContent = actor.displayName ?? '';
+      npc.touchFlashTimer = Math.max(npc.touchFlashTimer, touchTimer);
+      npc.attackFlashTimer = Math.max(npc.attackFlashTimer, attackTimer);
+      return;
+    }
+
+    for (const flower of this.flowers) {
+      if (flower.id !== actor.id) {
+        continue;
+      }
+
+      flower.x = actor.x;
+      flower.y = actor.y;
+      flower.z = actor.z;
+      flower.knockbackVX = actor.vx;
+      flower.knockbackVY = actor.vy;
+      flower.displayName = actor.displayName;
+      flower.labelElement.textContent = actor.displayName ?? '';
+      flower.touchFlashTimer = Math.max(flower.touchFlashTimer, touchTimer);
+      flower.attackFlashTimer = Math.max(flower.attackFlashTimer, attackTimer);
+      return;
+    }
+
+    if (actor.kind === 'crystal' && actor.collected) {
+      this.collectCrystalById(actor.id, false);
+      return;
+    }
+
+    for (const trigger of this.triggers) {
+      if (trigger.id !== actor.id) {
+        continue;
+      }
+
+      trigger.touchFlashTimer = Math.max(trigger.touchFlashTimer, touchTimer);
+      trigger.attackFlashTimer = Math.max(trigger.attackFlashTimer, attackTimer);
+      return;
+    }
+  }
+
+  public applyNetworkCrystalCount(crystalCount: number): void {
+    this.crystalCount = crystalCount;
+    this.updateCrystalCounter();
+    this.updateHud();
+  }
+
+  public applyNetworkActorEvent(actorId: string, event: NetworkActorEvent): void {
+    switch (event.type) {
+      case 'pickedUp':
+        this.collectCrystalById(actorId, false);
+        return;
+      case 'touchFlash':
+        this.flashActorById(actorId, 'touch');
+        return;
+      case 'attackFlash':
+        this.flashActorById(actorId, 'attack', event.knockbackX ?? 0, event.knockbackY ?? 0);
+        return;
+      case 'triggerActivated':
+        this.flashActorById(actorId, 'touch');
+        return;
+    }
+  }
+
+  public applyNetworkScreenEffect(effect: NetworkScreenEffectEvent): void {
+    if (effect.type === 'flash') {
+      this.playScreenFlash(effect.color, effect.duration, effect.maxOpacity);
+      return;
+    }
+
+    this.playScreenShake(
+      effect.strength,
+      effect.duration,
+      effect.frequency ?? DEFAULT_SCREEN_SHAKE_FREQUENCY,
+      screenShakeEaseInOutEnvelope
+    );
+  }
+
+  public applyNetworkAttack(playerId: string, event: NetworkAttackEvent): void {
+    if (playerId === this.localNetworkPlayerId) {
+      return;
+    }
+
+    const remote = this.remotePlayers.get(playerId);
+    if (remote) {
+      remote.facing = event.facing;
+    }
+  }
+
+  public applyNetworkInteract(playerId: string, event: NetworkInteractionEvent): void {
+    if (playerId === this.localNetworkPlayerId) {
+      return;
+    }
+
+    const remote = this.remotePlayers.get(playerId);
+    if (remote) {
+      remote.facing = event.facing;
+    }
+  }
+
+  public applyNetworkTeleport(playerId: string, mapId: MapId, x: number, y: number): void {
+    if (playerId === this.localNetworkPlayerId) {
+      return;
+    }
+
+    const remote = this.remotePlayers.get(playerId);
+    if (!remote) {
+      return;
+    }
+
+    remote.mapId = mapId;
+    remote.x = x;
+    remote.y = y;
+    remote.z = this.map.id === mapId ? this.getSupportHeight(x, y) : remote.z;
+    remote.vx = 0;
+    remote.vy = 0;
+    remote.vz = 0;
+    remote.grounded = true;
+    remote.samples.length = 0;
+  }
+
+  public setRemotePlayers(players: NetworkPlayerState[]): void {
+    const expectedIds = new Set(players.map((player) => player.id));
+
+    for (const playerId of this.remotePlayers.keys()) {
+      if (!expectedIds.has(playerId)) {
+        this.removeRemotePlayer(playerId);
+      }
+    }
+
+    for (const player of players) {
+      this.upsertRemotePlayer(player);
+    }
+  }
+
+  public upsertRemotePlayer(player: NetworkPlayerState): void {
+    if (player.id === this.localNetworkPlayerId) {
+      return;
+    }
+
+    const remote = this.remotePlayers.get(player.id) ?? this.createRemotePlayer(player);
+    remote.displayName = player.displayName;
+    remote.mapId = player.mapId;
+    remote.x = player.x;
+    remote.y = player.y;
+    remote.z = player.z;
+    remote.vx = player.vx;
+    remote.vy = player.vy;
+    remote.vz = player.vz;
+    remote.grounded = player.grounded;
+    remote.facing = player.facing;
+    remote.labelElement.textContent = player.displayName;
+  }
+
+  public bufferRemotePlayerSnapshot(player: NetworkPlayerState): void {
+    if (player.id === this.localNetworkPlayerId) {
+      return;
+    }
+
+    const remote = this.remotePlayers.get(player.id) ?? this.createRemotePlayer(player);
+    remote.displayName = player.displayName;
+    remote.mapId = player.mapId;
+    remote.samples.push({
+      ...player,
+      receivedAt: performance.now()
+    });
+
+    if (remote.samples.length > REMOTE_PLAYER_SAMPLE_LIMIT) {
+      remote.samples.splice(0, remote.samples.length - REMOTE_PLAYER_SAMPLE_LIMIT);
+    }
+  }
+
+  public removeRemotePlayer(playerId: string): void {
+    const remote = this.remotePlayers.get(playerId);
+    if (!remote) {
+      return;
+    }
+
+    this.actorDepthGroup.remove(remote.depthProxy);
+    this.actorGroup.remove(remote.sprite);
+    this.actorGroup.remove(remote.shadow);
+    this.removeActorLabelElement(remote.labelElement);
+    remote.spriteMaterial.dispose();
+    this.remotePlayers.delete(playerId);
+  }
+
   private readonly handleResize = (): void => {
     const width = this.root.clientWidth || window.innerWidth;
     const height = this.root.clientHeight || window.innerHeight;
@@ -2218,6 +2550,15 @@ export class ThreeIsoGame {
       hitTargets: new Set<string>(),
       facingDirectionIndex
     };
+    this.networkEvents?.sendAttack({
+      mapId: this.map.id,
+      x: this.player.x,
+      y: this.player.y,
+      z: this.player.z,
+      directionX: worldDirection.x,
+      directionY: worldDirection.y,
+      facing: facingDirectionIndex
+    });
     this.updateAttackDebugVisual();
   }
 
@@ -2234,6 +2575,15 @@ export class ThreeIsoGame {
       hitTargets: new Set<string>(),
       facingDirectionIndex: this.currentDirection
     };
+    this.networkEvents?.sendAttack({
+      mapId: this.map.id,
+      x: this.player.x,
+      y: this.player.y,
+      z: this.player.z,
+      directionX: worldDirection.x,
+      directionY: worldDirection.y,
+      facing: this.currentDirection
+    });
     this.updateAttackDebugVisual();
   }
 
@@ -2250,6 +2600,15 @@ export class ThreeIsoGame {
       hitTarget: false,
       facingDirectionIndex: this.currentDirection
     };
+    this.networkEvents?.sendInteract({
+      mapId: this.map.id,
+      x: this.player.x,
+      y: this.player.y,
+      z: this.player.z,
+      directionX: worldDirection.x,
+      directionY: worldDirection.y,
+      facing: this.currentDirection
+    });
     this.updateInteractionDebugVisual();
   }
 
@@ -2694,6 +3053,10 @@ export class ThreeIsoGame {
     for (const crystal of this.crystals) {
       crystal.depthProxy.scale.set(widthScale, heightScale, widthScale);
     }
+
+    for (const remote of this.remotePlayers.values()) {
+      remote.depthProxy.scale.set(widthScale, heightScale, widthScale);
+    }
   }
 
   private getActorProxyDimensions(baseWidth: number, baseHeight: number): {
@@ -2755,6 +3118,50 @@ export class ThreeIsoGame {
     }
     this.actorLabelLayer.appendChild(label);
     return label;
+  }
+
+  private createRemotePlayer(player: NetworkPlayerState): RemotePlayerRenderState {
+    const spriteMaterial = this.createActorSpriteMaterial(
+      this.frameTextures[player.facing]?.[1] ?? this.frameTextures[4][1],
+      '#9fd8ff',
+      true
+    );
+    const sprite = this.createActorSprite(spriteMaterial);
+    const depthProxy = this.createActorDepthProxy(this.playerDepthProxyGeometry);
+    const shadow = this.createActorShadow();
+    const labelElement = this.createActorLabelElement(player.displayName);
+
+    sprite.visible = false;
+    depthProxy.visible = false;
+    shadow.visible = false;
+    this.actorDepthGroup.add(depthProxy);
+    this.actorGroup.add(sprite);
+    this.actorGroup.add(shadow);
+
+    const remote: RemotePlayerRenderState = {
+      id: player.id,
+      displayName: player.displayName,
+      mapId: player.mapId,
+      x: player.x,
+      y: player.y,
+      z: player.z,
+      vx: player.vx,
+      vy: player.vy,
+      vz: player.vz,
+      grounded: player.grounded,
+      facing: player.facing,
+      walkTime: 0,
+      samples: [],
+      labelElement,
+      spriteMaterial,
+      sprite,
+      depthProxy,
+      shadow
+    };
+
+    this.remotePlayers.set(player.id, remote);
+    this.refreshActorDepthProxyScales();
+    return remote;
   }
 
   private setActorLabelVisible(label: HTMLDivElement, visible: boolean): void {
@@ -3294,6 +3701,51 @@ export class ThreeIsoGame {
     this.teleportArmed = false;
   }
 
+  private reloadCurrentMapPreservingPlayer(): void {
+    const mapId = this.map.id;
+    const playerX = this.player.x;
+    const playerY = this.player.y;
+    const playerWasGrounded = this.player.grounded;
+
+    this.map = this.maps[mapId];
+    this.clearMapActors();
+    this.activeAttack = null;
+    this.activePlainInteraction = null;
+    this.attackCooldownTimer = 0;
+    this.player.x = clamp(
+      playerX,
+      MAP_EDGE_PADDING + PLAYER_COLLISION_RADIUS,
+      this.map.width - MAP_EDGE_PADDING - PLAYER_COLLISION_RADIUS
+    );
+    this.player.y = clamp(
+      playerY,
+      MAP_EDGE_PADDING + PLAYER_COLLISION_RADIUS,
+      this.map.height - MAP_EDGE_PADDING - PLAYER_COLLISION_RADIUS
+    );
+    this.player.z = playerWasGrounded
+      ? this.getSupportHeight(this.player.x, this.player.y)
+      : Math.max(this.player.z, this.getSupportHeight(this.player.x, this.player.y));
+
+    this.buildTerrain();
+    this.spawnNpcs();
+    this.spawnFlowers();
+    this.spawnCrystals();
+    this.spawnTriggers();
+    this.refreshActorDepthProxyScales();
+    this.updateNpcActivity();
+    this.updateFlowerActivity();
+    this.updateCrystalActivity();
+    this.updateTriggerActivity();
+    this.updateNpcVisuals();
+    this.updateFlowerVisuals();
+    this.updateCrystalVisuals();
+    this.updateTriggerVisuals();
+    this.updatePlayerVisuals();
+    this.updateRemotePlayerVisuals(0);
+    this.updateCamera(1 / 60, true);
+    this.updateActorLabels();
+  }
+
   private regenerateOverworld(): void {
     const nextSeed = this.createNextOverworldSeed();
     const nextTeleportTile = getRandomOverworldTeleportTile(nextSeed);
@@ -3436,6 +3888,7 @@ export class ThreeIsoGame {
 
   private startTeleportTransition(teleport: TeleportTile): void {
     this.teleportArmed = false;
+    this.networkEvents?.sendTeleport(teleport.targetMapId, teleport.targetX, teleport.targetY);
     this.playScreenFlash(
       '#ffffff',
       TELEPORT_FLASH_DURATION,
@@ -4580,6 +5033,24 @@ export class ThreeIsoGame {
     const canAddNonPlayerOccluder = (block: TerrainBlockInstance): boolean =>
       playerFrontBlocks.has(block) || !this.canFrontTerrainAffectActor(block, playerActor, basis);
 
+    for (const remote of this.remotePlayers.values()) {
+      if (remote.mapId !== this.map.id) {
+        continue;
+      }
+
+      this.markTerrainOccludersForActor(
+        {
+          x: remote.x,
+          y: remote.y,
+          footZ: remote.z / this.blockHeightScale,
+          bodyHeight: PLAYER_BODY_HEIGHT / this.blockHeightScale
+        },
+        basis,
+        frontBlocks,
+        canAddNonPlayerOccluder
+      );
+    }
+
     for (const npc of this.npcs) {
       if (!npc.active) {
         continue;
@@ -4859,7 +5330,9 @@ export class ThreeIsoGame {
     }
 
     this.activeAttack.remaining = Math.max(0, this.activeAttack.remaining - dt);
-    this.applyAttackHits(this.activeAttack);
+    if (!this.isNetworkConnected) {
+      this.applyAttackHits(this.activeAttack);
+    }
 
     if (this.activeAttack.remaining === 0) {
       this.attackCooldownTimer = this.activeAttack.profile.cooldown;
@@ -5076,6 +5549,11 @@ export class ThreeIsoGame {
   private handleActorPlainInteraction(interaction: ActorPlainInteraction | null): void {
     switch (interaction) {
       case 'regenerateOverworld':
+        if (this.isNetworkConnected) {
+          this.networkEvents?.sendRegenerateOverworld();
+          return;
+        }
+
         if (!this.trySpendCrystalForWorldRegeneration()) {
           return;
         }
@@ -5136,9 +5614,35 @@ export class ThreeIsoGame {
     targetRadius: number,
     targetHeight: number
   ): boolean {
+    return this.isPointInsideActionBoxFromOrigin(
+      profile,
+      worldDirection,
+      this.player.x,
+      this.player.y,
+      this.player.z,
+      targetX,
+      targetY,
+      targetFootZ,
+      targetRadius,
+      targetHeight
+    );
+  }
+
+  private isPointInsideActionBoxFromOrigin(
+    profile: AttackProfile,
+    worldDirection: Vec2,
+    originX: number,
+    originY: number,
+    originZ: number,
+    targetX: number,
+    targetY: number,
+    targetFootZ: number,
+    targetRadius: number,
+    targetHeight: number
+  ): boolean {
     const centerOffset = PLAYER_COLLISION_RADIUS + profile.reach * 0.5;
-    const centerX = this.player.x + worldDirection.x * centerOffset;
-    const centerY = this.player.y + worldDirection.y * centerOffset;
+    const centerX = originX + worldDirection.x * centerOffset;
+    const centerY = originY + worldDirection.y * centerOffset;
     const sideAxis = {
       x: -worldDirection.y,
       y: worldDirection.x
@@ -5154,7 +5658,7 @@ export class ThreeIsoGame {
       return false;
     }
 
-    const attackBottom = this.player.z;
+    const attackBottom = originZ;
     const attackTop = attackBottom + profile.height;
     const targetTop = targetFootZ + targetHeight;
     return targetFootZ <= attackTop && targetTop >= attackBottom;
@@ -5378,21 +5882,26 @@ export class ThreeIsoGame {
       this.updateMapTeleport();
     }
     this.updateNpcActivity();
-    this.updateNpcs(dt);
+    if (this.isNetworkConnected) {
+      this.updateNetworkDrivenActorTimers(dt);
+    } else {
+      this.updateNpcs(dt);
+      this.updateFlowers(dt);
+      this.updateTriggers(dt);
+    }
     this.updateNpcTouchFeedback();
     this.updateFlowerActivity();
-    this.updateFlowers(dt);
     this.updateFlowerTouchFeedback();
     this.updateCrystalActivity();
     this.updateCrystalPickups();
     this.updateTriggerActivity();
-    this.updateTriggers(dt);
     this.updateTriggerTouchFeedback();
     this.updateActiveAttack(dt);
     this.updateActivePlainInteraction(dt);
     this.updateScreenEffects(dt);
     this.updatePlayerAnimation(dt);
     this.updatePlayerVisuals();
+    this.updateRemotePlayerVisuals(dt);
     this.updateNpcVisuals();
     this.updateFlowerVisuals();
     this.updateCrystalVisuals();
@@ -5500,6 +6009,24 @@ export class ThreeIsoGame {
     }
   }
 
+  private updateNetworkDrivenActorTimers(dt: number): void {
+    for (const npc of this.npcs) {
+      npc.touchFlashTimer = Math.max(0, npc.touchFlashTimer - dt);
+      npc.attackFlashTimer = Math.max(0, npc.attackFlashTimer - dt);
+      npc.walkTime = length(npc.vx, npc.vy) > 0.05 ? npc.walkTime + dt : 0;
+    }
+
+    for (const flower of this.flowers) {
+      flower.touchFlashTimer = Math.max(0, flower.touchFlashTimer - dt);
+      flower.attackFlashTimer = Math.max(0, flower.attackFlashTimer - dt);
+    }
+
+    for (const trigger of this.triggers) {
+      trigger.touchFlashTimer = Math.max(0, trigger.touchFlashTimer - dt);
+      trigger.attackFlashTimer = Math.max(0, trigger.attackFlashTimer - dt);
+    }
+  }
+
   private updateNpcs(dt: number): void {
     for (const npc of this.npcs) {
       npc.touchFlashTimer = Math.max(0, npc.touchFlashTimer - dt);
@@ -5598,6 +6125,169 @@ export class ThreeIsoGame {
     }
   }
 
+  private collectCrystalById(crystalId: string, incrementInventory: boolean): void {
+    this.collectedCrystalIds.add(crystalId);
+
+    for (const crystal of this.crystals) {
+      if (crystal.id !== crystalId) {
+        continue;
+      }
+
+      crystal.collected = true;
+      crystal.active = false;
+      crystal.sprite.visible = false;
+      crystal.depthProxy.visible = false;
+      crystal.shadow.visible = false;
+      this.setActorLabelVisible(crystal.labelElement, false);
+      break;
+    }
+
+    if (incrementInventory) {
+      this.crystalCount += 1;
+      this.updateCrystalCounter();
+    }
+  }
+
+  private flashActorById(
+    actorId: string,
+    flashKind: 'touch' | 'attack',
+    knockbackX = 0,
+    knockbackY = 0
+  ): void {
+    const touchTimer = flashKind === 'touch' ? NPC_TOUCH_FLASH_TIME : 0;
+    const attackTimer = flashKind === 'attack' ? ATTACK_FLASH_TIME : 0;
+
+    for (const npc of this.npcs) {
+      if (npc.id !== actorId) {
+        continue;
+      }
+
+      npc.touchFlashTimer = Math.max(npc.touchFlashTimer, touchTimer);
+      npc.attackFlashTimer = Math.max(npc.attackFlashTimer, attackTimer);
+      if (flashKind === 'attack' && npc.knockbackable) {
+        npc.knockbackVX = knockbackX;
+        npc.knockbackVY = knockbackY;
+      }
+      return;
+    }
+
+    for (const flower of this.flowers) {
+      if (flower.id !== actorId) {
+        continue;
+      }
+
+      flower.touchFlashTimer = Math.max(flower.touchFlashTimer, touchTimer);
+      flower.attackFlashTimer = Math.max(flower.attackFlashTimer, attackTimer);
+      if (flashKind === 'attack') {
+        flower.knockbackVX = knockbackX;
+        flower.knockbackVY = knockbackY;
+      }
+      return;
+    }
+
+    for (const trigger of this.triggers) {
+      if (trigger.id !== actorId) {
+        continue;
+      }
+
+      trigger.touchFlashTimer = Math.max(trigger.touchFlashTimer, touchTimer);
+      trigger.attackFlashTimer = Math.max(trigger.attackFlashTimer, attackTimer);
+      return;
+    }
+  }
+
+  private applyActionHitsFromNetwork(
+    profile: AttackProfile,
+    event: NetworkAttackEvent | NetworkInteractionEvent,
+    useAttackFlash: boolean
+  ): void {
+    if (event.mapId !== this.map.id) {
+      return;
+    }
+
+    const worldDirection = {
+      x: event.directionX,
+      y: event.directionY
+    };
+
+    const considerTarget = (
+      targetId: string,
+      targetX: number,
+      targetY: number,
+      targetFootZ: number,
+      targetRadius: number,
+      targetHeight: number,
+      knockbackScale = 1
+    ): void => {
+      if (
+        !this.isPointInsideActionBoxFromOrigin(
+          profile,
+          worldDirection,
+          event.x,
+          event.y,
+          event.z,
+          targetX,
+          targetY,
+          targetFootZ,
+          targetRadius,
+          targetHeight
+        )
+      ) {
+        return;
+      }
+
+      if (useAttackFlash) {
+        this.flashActorById(
+          targetId,
+          'attack',
+          worldDirection.x * profile.knockback * knockbackScale,
+          worldDirection.y * profile.knockback * knockbackScale
+        );
+      } else {
+        this.flashActorById(targetId, 'touch');
+      }
+    };
+
+    if (profile.affectsNpcs) {
+      for (const npc of this.npcs) {
+        if (npc.active) {
+          considerTarget(npc.id, npc.x, npc.y, npc.z, NPC_COLLISION_RADIUS, NPC_BODY_HEIGHT);
+        }
+      }
+    }
+
+    if (profile.affectsFlowers) {
+      for (const flower of this.flowers) {
+        if (flower.active) {
+          considerTarget(
+            flower.id,
+            flower.x,
+            flower.y,
+            flower.z,
+            FLOWER_COLLISION_RADIUS,
+            FLOWER_BODY_HEIGHT,
+            0.8
+          );
+        }
+      }
+    }
+
+    if (profile.affectsTriggers) {
+      for (const trigger of this.triggers) {
+        if (trigger.active) {
+          considerTarget(
+            trigger.id,
+            trigger.x,
+            trigger.y,
+            trigger.z,
+            Math.max(trigger.width, trigger.depth) * 0.5,
+            trigger.height
+          );
+        }
+      }
+    }
+  }
+
   private updateNpcTouchFeedback(): void {
     const touchRadius = PLAYER_COLLISION_RADIUS + NPC_COLLISION_RADIUS;
     const touchRadiusSq = touchRadius * touchRadius;
@@ -5614,6 +6304,7 @@ export class ThreeIsoGame {
 
       if (touching && !npc.playerTouching) {
         npc.touchFlashTimer = NPC_TOUCH_FLASH_TIME;
+        this.networkEvents?.sendActorTouched(npc.id, 'npc');
       }
 
       npc.playerTouching = touching;
@@ -5636,6 +6327,7 @@ export class ThreeIsoGame {
 
       if (touching && !flower.playerTouching) {
         flower.touchFlashTimer = NPC_TOUCH_FLASH_TIME;
+        this.networkEvents?.sendActorTouched(flower.id, 'flower');
       }
 
       flower.playerTouching = touching;
@@ -5658,11 +6350,12 @@ export class ThreeIsoGame {
         continue;
       }
 
-      crystal.collected = true;
-      crystal.active = false;
-      this.collectedCrystalIds.add(crystal.id);
-      this.crystalCount += 1;
-      this.updateCrystalCounter();
+      if (this.isNetworkConnected) {
+        this.collectCrystalById(crystal.id, false);
+        this.networkEvents?.sendCrystalPickedUp(crystal.id);
+      } else {
+        this.collectCrystalById(crystal.id, true);
+      }
     }
   }
 
@@ -5693,6 +6386,7 @@ export class ThreeIsoGame {
 
       if (touching && !trigger.playerTouching) {
         trigger.touchFlashTimer = NPC_TOUCH_FLASH_TIME;
+        this.networkEvents?.sendActorTouched(trigger.id, 'trigger');
       }
 
       trigger.playerTouching = touching;
@@ -5737,6 +6431,110 @@ export class ThreeIsoGame {
     this.updateInteractionDebugVisual();
 
     this.updateTerrainOcclusion();
+  }
+
+  private updateRemotePlayerVisuals(dt: number): void {
+    const proxyHeight = this.getActorProxyDimensions(
+      PLAYER_DEPTH_PROXY_WIDTH,
+      PLAYER_DEPTH_PROXY_HEIGHT
+    ).height;
+    const renderTime = performance.now() - REMOTE_PLAYER_INTERPOLATION_DELAY;
+
+    for (const remote of this.remotePlayers.values()) {
+      this.updateRemotePlayerFromSamples(remote, renderTime);
+
+      const visible = remote.mapId === this.map.id;
+      remote.depthProxy.visible = visible;
+      remote.sprite.visible = visible;
+      remote.shadow.visible = visible;
+
+      if (!visible) {
+        continue;
+      }
+
+      const groundHeight = this.getSupportHeight(remote.x, remote.y);
+      const airHeight = Math.max(0, remote.z - groundHeight);
+      const shadowScale = 1 + Math.min(airHeight * 0.12, 0.35);
+      const walking = length(remote.vx, remote.vy) > 0.15 && remote.grounded;
+
+      if (walking) {
+        remote.walkTime += dt;
+      } else {
+        remote.walkTime = 0;
+      }
+
+      const frameIndex = remote.grounded
+        ? walking
+          ? Math.floor(remote.walkTime / WALK_FRAME_TIME) % 3
+          : 1
+        : AIRBORNE_FRAME_INDEX;
+      const facing = Math.round(remote.facing) % this.frameTextures.length;
+      remote.spriteMaterial.map = this.frameTextures[facing < 0 ? 0 : facing][frameIndex];
+      remote.spriteMaterial.needsUpdate = true;
+
+      this.setActorDepthProxyPosition(
+        remote.depthProxy,
+        remote.x,
+        remote.z,
+        remote.y,
+        proxyHeight
+      );
+      this.setActorSpritePosition(
+        remote.sprite,
+        remote.x,
+        remote.z,
+        remote.y,
+        DEPTH_TESTED_SPRITE_CAMERA_BIAS_MULTIPLIER
+      );
+      const renderOrder = this.getActorRenderOrder(remote.x, remote.y, remote.z, 1);
+      remote.sprite.renderOrder = renderOrder;
+      remote.shadow.position.set(remote.x, groundHeight + 0.01, remote.y);
+      remote.shadow.scale.setScalar(shadowScale);
+      remote.shadow.renderOrder = renderOrder - 1;
+    }
+  }
+
+  private updateRemotePlayerFromSamples(
+    remote: RemotePlayerRenderState,
+    renderTime: number
+  ): void {
+    while (remote.samples.length >= 2 && remote.samples[1].receivedAt <= renderTime) {
+      remote.samples.shift();
+    }
+
+    const [from, to] = remote.samples;
+
+    if (from && to && from.receivedAt <= renderTime && to.receivedAt >= renderTime) {
+      const span = Math.max(1, to.receivedAt - from.receivedAt);
+      const t = clamp((renderTime - from.receivedAt) / span, 0, 1);
+      remote.x = lerp(from.x, to.x, t);
+      remote.y = lerp(from.y, to.y, t);
+      remote.z = lerp(from.z, to.z, t);
+      remote.vx = lerp(from.vx, to.vx, t);
+      remote.vy = lerp(from.vy, to.vy, t);
+      remote.vz = lerp(from.vz, to.vz, t);
+      remote.grounded = t < 0.5 ? from.grounded : to.grounded;
+      remote.facing = t < 0.5 ? from.facing : to.facing;
+      remote.mapId = to.mapId;
+      return;
+    }
+
+    const latest = remote.samples[remote.samples.length - 1];
+    if (!latest) {
+      return;
+    }
+
+    const age = performance.now() - latest.receivedAt;
+    const extrapolateSeconds = Math.min(age, REMOTE_PLAYER_EXTRAPOLATION_CAP) / 1000;
+    remote.x = latest.x + latest.vx * extrapolateSeconds;
+    remote.y = latest.y + latest.vy * extrapolateSeconds;
+    remote.z = latest.z + latest.vz * extrapolateSeconds;
+    remote.vx = latest.vx;
+    remote.vy = latest.vy;
+    remote.vz = latest.vz;
+    remote.grounded = latest.grounded;
+    remote.facing = latest.facing;
+    remote.mapId = latest.mapId;
   }
 
   private updateNpcVisuals(): void {
@@ -5949,6 +6747,19 @@ export class ThreeIsoGame {
         trigger.labelFontSizeFactor
       );
     }
+
+    for (const remote of this.remotePlayers.values()) {
+      this.updateActorLabel(
+        remote.labelElement,
+        remote.displayName,
+        remote.mapId === this.map.id,
+        remote.x,
+        remote.y,
+        remote.z + PLAYER_BODY_HEIGHT + 0.18,
+        1,
+        0.92
+      );
+    }
   }
 
   private updateActorLabel(
@@ -6118,6 +6929,7 @@ export class ThreeIsoGame {
       `Position: ${this.player.x.toFixed(2)}, ${this.player.y.toFixed(2)}, ${this.player.z.toFixed(2)}\n` +
       `Ground: ${ground.toFixed(2)}  |  Vertical speed: ${this.player.vz.toFixed(2)}\n` +
       `State: ${this.player.grounded ? 'grounded' : 'airborne'}  |  View: ${viewName}-up (${this.viewRotation * 90} deg)\n` +
+      `Network: ${this.networkStatusText}  |  Remote players: ${this.remotePlayers.size}\n` +
       `Debug free camera: ${this.freeCameraEnabled ? 'on' : 'off'} (toggle: \`)\n` +
       `${axisSummary}\n` +
       `Renderer: Three.js terrain pass in progress. Exposed cube tiles are shaded in 3D; actor is a billboard sprite.`;

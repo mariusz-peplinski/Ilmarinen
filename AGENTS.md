@@ -8,8 +8,12 @@ This repo is an Electron + Vite + TypeScript desktop game prototype. The active 
 - `src/preload/`: preload bridge.
 - `src/renderer/src/main.ts`: renderer bootstrap, HUD/debug UI, asset loading.
 - `src/renderer/src/three-game.ts`: active game/runtime implementation.
+- `src/renderer/src/network/network-client.ts`: renderer-side WebSocket client wrapper.
 - `src/renderer/src/game.ts`: older Pixi-based prototype/reference path.
 - `src/renderer/src/style.css`: HUD/overlay styling.
+- `src/server/index.ts`: multiplayer WebSocket room server.
+- `src/shared/network-protocol.ts`: shared multiplayer message/types contract.
+- `src/shared/world-generation.ts`: deterministic world, terrain support, and actor generation helpers shared with the server.
 - `src/renderer/editor.html`: map editor entry.
 - `src/renderer/src/editor.ts`: canvas-based map editor.
 - `src/renderer/src/editor.css`: map editor styling.
@@ -47,6 +51,21 @@ This repo is an Electron + Vite + TypeScript desktop game prototype. The active 
 - The renderer HUD includes a compass, FPS counter, lighting/shadow controls, terrain readability controls, actor-occlusion tuning controls, actor label controls, a trigger-hitbox toggle, and a hurtbox visibility toggle.
 - Current caveat: actor ordering and actor-vs-terrain occlusion are still being tuned. Be careful when changing render order, sprite depth settings, proxy placement, or the player/front-terrain overlay path.
 
+## Multiplayer Notes
+
+- `npm run server` starts the WebSocket server on `ws://localhost:8787`.
+- The game client exposes a Multiplayer HUD panel for server URL, display name, connect/disconnect, and status.
+- Run multiplayer locally with one server terminal and one or more `npm run dev` client terminals.
+- The server assigns player IDs and tracks connected players.
+- The server owns shared world state: current overworld seed, teleport tile, crystal count, collected crystal IDs, and regenerated world factors.
+- The server builds actor manifests and terrain support maps from `src/shared/world-generation.ts`.
+- The server owns connected-mode shared actor simulation: attacks, touch/interact flashes, knockback decay, mobile NPC wandering, terrain-aware actor movement, crystal pickups/spends, teleports, and world-regeneration broadcasts.
+- Server movement currently uses gameplay terrain support, not a full 3D physics engine. Knockback can move/drop actors but refuses steep step-ups and blocked cells; wandering NPCs avoid cliff drops and steep climbs.
+- Clients keep local player movement responsive and send player snapshots/intents. Remote players are interpolated from snapshots.
+- While connected, shared NPC/flower/crystal/trigger visuals should be driven by server snapshots and events; avoid reintroducing independent client-side simulation for shared actors.
+- Multiplayer is trusted co-op authority, not anti-cheat authoritative. Some collision/intention detection still starts on the client, with the server owning visible shared results.
+- Current caveat: the renderer still has duplicated terrain/spawn generation for offline rendering and loading. Prefer moving reusable generation behavior into `src/shared/world-generation.ts` instead of adding another renderer-only copy.
+
 ## Map Editor Notes
 
 - `npm run editor` and `npm run dev:editor` launch the Electron map editor via `ISOGAME_TOOL=editor`.
@@ -77,6 +96,7 @@ These are source-art facts. Do **not** treat the atlas as ordinary flat top/side
 ## Build, Test, and Development Commands
 
 - `npm run dev`: start the Electron app in development mode.
+- `npm run server`: start the multiplayer WebSocket server.
 - `npm run editor`: start the Electron map editor in development mode.
 - `npm run dev:editor`: alias for `npm run editor`.
 - `npm run typecheck`: run TypeScript checks.

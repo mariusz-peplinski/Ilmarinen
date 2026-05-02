@@ -7,6 +7,7 @@
     "dev": "electron-vite dev",
     "editor": "ISOGAME_TOOL=editor electron-vite dev",
     "dev:editor": "ISOGAME_TOOL=editor electron-vite dev",
+    "server": "tsx src/server/index.ts",
     "build": "electron-vite build",
     "dist": "npm run build && electron-builder",
     "typecheck": "tsc --noEmit"
@@ -37,13 +38,16 @@
   },
   "dependencies": {
     "pixi.js": "^7.4.3",
-    "three": "^0.183.2"
+    "three": "^0.183.2",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/three": "^0.183.1",
+    "@types/ws": "^8.18.1",
     "electron": "^41.0.4",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.2",
     "vite": "^7.2.0"
   }

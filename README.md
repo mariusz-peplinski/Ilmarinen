@@ -1,6 +1,6 @@
 # IsoGame Prototype
 
-Desktop isometric action prototype built with Electron, Vite, TypeScript, and Three.js.
+Desktop isometric action prototype built with Electron, Vite, TypeScript, Three.js, and a small WebSocket multiplayer server.
 
 ## Controls
 
@@ -28,6 +28,18 @@ Desktop isometric action prototype built with Electron, Vite, TypeScript, and Th
 - NPC, flower, trigger, and other non-player actor processing is gated by an alive radius around the player.
 - The renderer includes a HUD, compass, FPS counter, and debug controls for lighting, shadows, terrain readability, actor-occlusion tuning, actor labels, trigger hitboxes, and hurtbox visibility.
 
+## Multiplayer
+
+- `npm run server` starts the WebSocket room server on `ws://localhost:8787`.
+- Run the server in one terminal, then run one or more `npm run dev` clients and connect through the in-game Multiplayer panel.
+- The server assigns player IDs, tracks connected players, owns the current overworld seed, teleport tile, crystal count, collected crystals, and world regeneration.
+- Shared protocol types live in `src/shared/network-protocol.ts`.
+- Shared deterministic world/actor helpers live in `src/shared/world-generation.ts`; the server uses them to build terrain support maps and authoritative actor manifests.
+- The server owns shared actor simulation while clients are connected: attack hit detection, touch/attack flashes, knockback decay, terrain-aware actor movement, mobile NPC wandering, crystal pickup/spend flow, teleports, and world-regeneration broadcasts.
+- Clients still simulate the local player immediately for responsive movement. Remote players are interpolated from network snapshots, and shared NPC/flower/crystal/trigger visuals are driven by server snapshots/events while connected.
+- Current multiplayer is trusted co-op authority, not an anti-cheat architecture. Some intents are still detected locally and reported to the server, which owns the visible shared result.
+- Current cleanup target: the renderer still has local terrain/spawn generation paths for rendering and offline play; more of that should move onto the shared generation module over time.
+
 ## Map Editor
 
 - `npm run editor` or `npm run dev:editor`: launch the Electron map editor instead of the game.
@@ -37,6 +49,7 @@ Desktop isometric action prototype built with Electron, Vite, TypeScript, and Th
 ## Scripts
 
 - `npm run dev`: launch the desktop game in development mode
+- `npm run server`: launch the multiplayer WebSocket server
 - `npm run editor`: launch the map editor in development mode
 - `npm run dev:editor`: alias for `npm run editor`
 - `npm run typecheck`: run TypeScript checks without emitting files
@@ -46,6 +59,9 @@ Desktop isometric action prototype built with Electron, Vite, TypeScript, and Th
 ## Notes
 
 - The active gameplay/runtime lives in `src/renderer/src/three-game.ts`.
+- The browser-side multiplayer wrapper lives in `src/renderer/src/network/network-client.ts`.
+- The multiplayer server lives in `src/server/index.ts`.
+- Shared network protocol and world-generation code lives under `src/shared/`.
 - The older PixiJS path is still kept in the repo as reference, but Three.js is the active renderer.
 - Current rendering work is focused on actor ordering and actor-vs-terrain occlusion polish rather than terrain meshing itself.
 - `new-tileset.png` remains in the repo for future art integration once the gameplay/rendering foundations settle.
