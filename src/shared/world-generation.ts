@@ -325,7 +325,6 @@ function createOverworldMap(
       sturdyNpcCount: spawnConfig.sturdyNpcCount,
       fixedSturdyNpcs: [],
       fixedTriggers: [
-        { x: 19.5, y: 12.5, displayName: 'Old Marker' },
         { x: 23.5, y: 13.5, displayName: null }
       ],
       flowerCount: spawnConfig.flowerCount

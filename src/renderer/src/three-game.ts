@@ -1314,15 +1314,6 @@ function createOverworldMap(
       fixedSturdyNpcs: [],
       fixedTriggers: [
         {
-          x: 19.5,
-          y: 12.5,
-          width: 1.2,
-          depth: 1.2,
-          height: 1.1,
-          displayName: 'Old Marker',
-          labelRangeFactor: 1.15
-        },
-        {
           x: 23.5,
           y: 13.5,
           width: 0.7,
