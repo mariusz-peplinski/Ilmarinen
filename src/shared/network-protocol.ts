@@ -143,11 +143,64 @@ export type ServerMessage =
   | { type: 'worldChanged'; serverTime: number; world: NetworkWorldState }
   | { type: 'teleport'; serverTime: number; playerId: string; mapId: MapId; x: number; y: number };
 
-export function isClientMessage(value: unknown): value is ClientMessage {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isMapId(value: unknown): value is MapId {
+  return value === 'overworld' || value === 'hubWorld';
+}
+
+function hasNumberFields(value: Record<string, unknown>, fields: readonly string[]): boolean {
+  return fields.every((field) => isFiniteNumber(value[field]));
+}
+
+function isNetworkEventMessage(value: Record<string, unknown>): boolean {
   return (
-    typeof value === 'object' &&
-    value !== null &&
-    'type' in value &&
-    typeof (value as { type: unknown }).type === 'string'
+    isMapId(value.mapId) &&
+    hasNumberFields(value, ['seq', 'clientTime', 'x', 'y', 'z', 'directionX', 'directionY', 'facing'])
   );
+}
+
+export function isClientMessage(value: unknown): value is ClientMessage {
+  if (!isRecord(value) || typeof value.type !== 'string') {
+    return false;
+  }
+
+  switch (value.type) {
+    case 'hello':
+      return typeof value.name === 'string' && isFiniteNumber(value.protocolVersion);
+    case 'playerSnapshot':
+      return (
+        isMapId(value.mapId) &&
+        typeof value.grounded === 'boolean' &&
+        hasNumberFields(value, ['seq', 'clientTime', 'x', 'y', 'z', 'vx', 'vy', 'vz', 'facing'])
+      );
+    case 'attack':
+    case 'interact':
+      return isNetworkEventMessage(value);
+    case 'actorTouched':
+      return (
+        isFiniteNumber(value.clientTime) &&
+        typeof value.actorId === 'string' &&
+        (value.actorKind === 'npc' || value.actorKind === 'flower' || value.actorKind === 'trigger')
+      );
+    case 'crystalPickedUp':
+      return isFiniteNumber(value.clientTime) && typeof value.actorId === 'string';
+    case 'teleport':
+      return (
+        isFiniteNumber(value.clientTime) &&
+        isMapId(value.targetMapId) &&
+        isFiniteNumber(value.targetX) &&
+        isFiniteNumber(value.targetY)
+      );
+    case 'regenerateOverworld':
+      return isFiniteNumber(value.clientTime);
+    default:
+      return false;
+  }
 }

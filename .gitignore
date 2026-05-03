@@ -3,6 +3,7 @@ dist
 dist-electron
 out
 release
+coverage
 .DS_Store
 *_debug_*.png
 .webui_secret_key

@@ -53,6 +53,9 @@ Desktop isometric action prototype built with Electron, Vite, TypeScript, Three.
 - `npm run editor`: launch the map editor in development mode
 - `npm run dev:editor`: alias for `npm run editor`
 - `npm run typecheck`: run TypeScript checks without emitting files
+- `npm test`: run the Vitest unit test suite
+- `npm run test:watch`: run Vitest in watch mode
+- `npm run test:coverage`: run Vitest with coverage output
 - `npm run build`: build the application bundles
 - `npm run dist`: build a packaged desktop artifact
 
@@ -62,6 +65,7 @@ Desktop isometric action prototype built with Electron, Vite, TypeScript, Three.
 - The browser-side multiplayer wrapper lives in `src/renderer/src/network/network-client.ts`.
 - The multiplayer server lives in `src/server/index.ts`.
 - Shared network protocol and world-generation code lives under `src/shared/`.
+- The testing strategy and coverage priorities live in `TESTING.md`.
 - The older PixiJS path is still kept in the repo as reference, but Three.js is the active renderer.
 - Current rendering work is focused on actor ordering and actor-vs-terrain occlusion polish rather than terrain meshing itself.
 - `new-tileset.png` remains in the repo for future art integration once the gameplay/rendering foundations settle.

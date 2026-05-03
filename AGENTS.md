@@ -14,6 +14,7 @@ This repo is an Electron + Vite + TypeScript desktop game prototype. The active 
 - `src/server/index.ts`: multiplayer WebSocket room server.
 - `src/shared/network-protocol.ts`: shared multiplayer message/types contract.
 - `src/shared/world-generation.ts`: deterministic world, terrain support, and actor generation helpers shared with the server.
+- `TESTING.md`: testing strategy, coverage priorities, and future test extraction notes.
 - `src/renderer/editor.html`: map editor entry.
 - `src/renderer/src/editor.ts`: canvas-based map editor.
 - `src/renderer/src/editor.css`: map editor styling.
@@ -100,6 +101,9 @@ These are source-art facts. Do **not** treat the atlas as ordinary flat top/side
 - `npm run editor`: start the Electron map editor in development mode.
 - `npm run dev:editor`: alias for `npm run editor`.
 - `npm run typecheck`: run TypeScript checks.
+- `npm test`: run the Vitest unit test suite.
+- `npm run test:watch`: run Vitest in watch mode.
+- `npm run test:coverage`: run Vitest with coverage output.
 - `npm run build`: build renderer/main/preload bundles.
 - `npm run dist`: package the app.
 
@@ -107,6 +111,10 @@ Before committing rendering/gameplay work, run:
 
 - `npm run typecheck`
 - `npm run build`
+
+Before committing shared deterministic logic, network protocol, or server simulation changes, run:
+
+- `npm test`
 
 ## Coding Style & Naming Conventions
 
