@@ -513,7 +513,7 @@ const DEFAULT_AMBIENT_INTENSITY = 1.2;
 const DEFAULT_SUN_INTENSITY = 2.5;
 const DEFAULT_SUN_AZIMUTH = (230 * Math.PI) / 180;
 const DEFAULT_SUN_ELEVATION = (30 * Math.PI) / 180;
-const DEFAULT_HEIGHT_TINT_STRENGTH = 0.8;
+const DEFAULT_HEIGHT_TINT_STRENGTH = 0.45;
 const DEFAULT_SHADOW_QUALITY = 2048;
 const FREE_CAMERA_MIN_PITCH = 0.38;
 const FREE_CAMERA_MAX_PITCH = 1.2;
@@ -1389,8 +1389,8 @@ function createOverworldMap(
       const ridgeBoost = ridgeSignal * ridgeRegion;
       const normalizedHeightField = clamp(
         baseHeightField * terrainRelief.baseWeight +
-          ridgeBoost * terrainRelief.ridgeStrength +
-          roughness * 0.025,
+        ridgeBoost * terrainRelief.ridgeStrength +
+        roughness * 0.025,
         0,
         1
       );
@@ -2898,11 +2898,11 @@ export class ThreeIsoGame {
       const brightness = span.isEdgeBand ? this.terrainTopEdgeBandBrightness : span.brightness;
       const color = span.isEdgeBand
         ? this.applyTopEdgeBandTone(
-            this.getTerrainTopRenderColor(span.material, span.heightTintBaseOpacity)
-          )
+          this.getTerrainTopRenderColor(span.material, span.heightTintBaseOpacity)
+        )
         : this
-            .getTerrainTopRenderColor(span.material, span.heightTintBaseOpacity)
-            .multiplyScalar(brightness);
+          .getTerrainTopRenderColor(span.material, span.heightTintBaseOpacity)
+          .multiplyScalar(brightness);
       for (let index = 0; index < span.vertexCount; index += 1) {
         const colorIndex = (span.startVertex + index) * 3;
         colorArray[colorIndex] = color.r;
@@ -4599,11 +4599,11 @@ export class ThreeIsoGame {
         frontTopEdgeMesh:
           topEdgeFaceCount > 0
             ? this.createTerrainRenderMesh(
-                this.terrainTopGeometry,
-                this.terrainFrontTopEdgeMaterial,
-                topEdgeFaceCount,
-                21
-              )
+              this.terrainTopGeometry,
+              this.terrainFrontTopEdgeMaterial,
+              topEdgeFaceCount,
+              21
+            )
             : null,
         opaqueSideMesh,
         frontSideMesh:
@@ -4628,10 +4628,10 @@ export class ThreeIsoGame {
         const topFace =
           blockData.hasTop && chunk.frontTopMesh
             ? {
-                type: 'top' as const,
-                rotationY: 0,
-                frontIndex: nextTopFaceIndex
-              }
+              type: 'top' as const,
+              rotationY: 0,
+              frontIndex: nextTopFaceIndex
+            }
             : null;
         if (topFace) {
           chunk.frontTopMesh?.setMatrixAt(topFace.frontIndex, this.hiddenTerrainMatrix);
@@ -4641,106 +4641,106 @@ export class ThreeIsoGame {
         const topEdgeFaces =
           blockData.hasTop && chunk.frontTopEdgeMesh
             ? (() => {
-                const faces: TerrainFaceBinding[] = [];
-                const pushFace = (
-                  offsetX: number,
-                  offsetZ: number,
-                  scaleX: number,
-                  scaleZ: number
-                ): void => {
-                  const face: TerrainFaceBinding = {
-                    type: 'top-edge',
-                    rotationY: 0,
-                    frontIndex: nextTopEdgeFaceIndex,
-                    offsetX,
-                    offsetZ,
-                    scaleX,
-                    scaleZ
-                  };
-                  chunk.frontTopEdgeMesh?.setMatrixAt(face.frontIndex, this.hiddenTerrainMatrix);
-                  nextTopEdgeFaceIndex += 1;
-                  faces.push(face);
+              const faces: TerrainFaceBinding[] = [];
+              const pushFace = (
+                offsetX: number,
+                offsetZ: number,
+                scaleX: number,
+                scaleZ: number
+              ): void => {
+                const face: TerrainFaceBinding = {
+                  type: 'top-edge',
+                  rotationY: 0,
+                  frontIndex: nextTopEdgeFaceIndex,
+                  offsetX,
+                  offsetZ,
+                  scaleX,
+                  scaleZ
                 };
+                chunk.frontTopEdgeMesh?.setMatrixAt(face.frontIndex, this.hiddenTerrainMatrix);
+                nextTopEdgeFaceIndex += 1;
+                faces.push(face);
+              };
 
-                for (const direction of blockData.sideDirections) {
-                  pushFace(
-                    direction === 'west'
-                      ? -0.5 + this.terrainTopEdgeBandWidth * 0.5
-                      : direction === 'east'
-                        ? 0.5 - this.terrainTopEdgeBandWidth * 0.5
-                        : 0,
-                    direction === 'north'
-                      ? -0.5 + this.terrainTopEdgeBandWidth * 0.5
-                      : direction === 'south'
-                        ? 0.5 - this.terrainTopEdgeBandWidth * 0.5
-                        : 0,
-                    direction === 'north' || direction === 'south'
-                      ? 1
-                      : this.terrainTopEdgeBandWidth,
-                    direction === 'east' || direction === 'west'
-                      ? 1
-                      : this.terrainTopEdgeBandWidth
-                  );
-                }
+              for (const direction of blockData.sideDirections) {
+                pushFace(
+                  direction === 'west'
+                    ? -0.5 + this.terrainTopEdgeBandWidth * 0.5
+                    : direction === 'east'
+                      ? 0.5 - this.terrainTopEdgeBandWidth * 0.5
+                      : 0,
+                  direction === 'north'
+                    ? -0.5 + this.terrainTopEdgeBandWidth * 0.5
+                    : direction === 'south'
+                      ? 0.5 - this.terrainTopEdgeBandWidth * 0.5
+                      : 0,
+                  direction === 'north' || direction === 'south'
+                    ? 1
+                    : this.terrainTopEdgeBandWidth,
+                  direction === 'east' || direction === 'west'
+                    ? 1
+                    : this.terrainTopEdgeBandWidth
+                );
+              }
 
-                const sideSet = new Set(blockData.sideDirections);
-                const topLevel = blockData.z + 1;
-                const northFilled = getHeight(this.map, blockData.x, blockData.y - 1) >= topLevel;
-                const southFilled = getHeight(this.map, blockData.x, blockData.y + 1) >= topLevel;
-                const westFilled = getHeight(this.map, blockData.x - 1, blockData.y) >= topLevel;
-                const eastFilled = getHeight(this.map, blockData.x + 1, blockData.y) >= topLevel;
+              const sideSet = new Set(blockData.sideDirections);
+              const topLevel = blockData.z + 1;
+              const northFilled = getHeight(this.map, blockData.x, blockData.y - 1) >= topLevel;
+              const southFilled = getHeight(this.map, blockData.x, blockData.y + 1) >= topLevel;
+              const westFilled = getHeight(this.map, blockData.x - 1, blockData.y) >= topLevel;
+              const eastFilled = getHeight(this.map, blockData.x + 1, blockData.y) >= topLevel;
 
-                if (
-                  northFilled &&
-                  westFilled &&
-                  getHeight(this.map, blockData.x - 1, blockData.y - 1) < topLevel
-                ) {
-                  pushFace(
-                    -0.5 + this.terrainTopEdgeBandWidth * 0.5,
-                    -0.5 + this.terrainTopEdgeBandWidth * 0.5,
-                    this.terrainTopEdgeBandWidth,
-                    this.terrainTopEdgeBandWidth
-                  );
-                }
-                if (
-                  northFilled &&
-                  eastFilled &&
-                  getHeight(this.map, blockData.x + 1, blockData.y - 1) < topLevel
-                ) {
-                  pushFace(
-                    0.5 - this.terrainTopEdgeBandWidth * 0.5,
-                    -0.5 + this.terrainTopEdgeBandWidth * 0.5,
-                    this.terrainTopEdgeBandWidth,
-                    this.terrainTopEdgeBandWidth
-                  );
-                }
-                if (
-                  southFilled &&
-                  westFilled &&
-                  getHeight(this.map, blockData.x - 1, blockData.y + 1) < topLevel
-                ) {
-                  pushFace(
-                    -0.5 + this.terrainTopEdgeBandWidth * 0.5,
-                    0.5 - this.terrainTopEdgeBandWidth * 0.5,
-                    this.terrainTopEdgeBandWidth,
-                    this.terrainTopEdgeBandWidth
-                  );
-                }
-                if (
-                  southFilled &&
-                  eastFilled &&
-                  getHeight(this.map, blockData.x + 1, blockData.y + 1) < topLevel
-                ) {
-                  pushFace(
-                    0.5 - this.terrainTopEdgeBandWidth * 0.5,
-                    0.5 - this.terrainTopEdgeBandWidth * 0.5,
-                    this.terrainTopEdgeBandWidth,
-                    this.terrainTopEdgeBandWidth
-                  );
-                }
+              if (
+                northFilled &&
+                westFilled &&
+                getHeight(this.map, blockData.x - 1, blockData.y - 1) < topLevel
+              ) {
+                pushFace(
+                  -0.5 + this.terrainTopEdgeBandWidth * 0.5,
+                  -0.5 + this.terrainTopEdgeBandWidth * 0.5,
+                  this.terrainTopEdgeBandWidth,
+                  this.terrainTopEdgeBandWidth
+                );
+              }
+              if (
+                northFilled &&
+                eastFilled &&
+                getHeight(this.map, blockData.x + 1, blockData.y - 1) < topLevel
+              ) {
+                pushFace(
+                  0.5 - this.terrainTopEdgeBandWidth * 0.5,
+                  -0.5 + this.terrainTopEdgeBandWidth * 0.5,
+                  this.terrainTopEdgeBandWidth,
+                  this.terrainTopEdgeBandWidth
+                );
+              }
+              if (
+                southFilled &&
+                westFilled &&
+                getHeight(this.map, blockData.x - 1, blockData.y + 1) < topLevel
+              ) {
+                pushFace(
+                  -0.5 + this.terrainTopEdgeBandWidth * 0.5,
+                  0.5 - this.terrainTopEdgeBandWidth * 0.5,
+                  this.terrainTopEdgeBandWidth,
+                  this.terrainTopEdgeBandWidth
+                );
+              }
+              if (
+                southFilled &&
+                eastFilled &&
+                getHeight(this.map, blockData.x + 1, blockData.y + 1) < topLevel
+              ) {
+                pushFace(
+                  0.5 - this.terrainTopEdgeBandWidth * 0.5,
+                  0.5 - this.terrainTopEdgeBandWidth * 0.5,
+                  this.terrainTopEdgeBandWidth,
+                  this.terrainTopEdgeBandWidth
+                );
+              }
 
-                return faces;
-              })()
+              return faces;
+            })()
             : [];
 
         const sideFaces = blockData.sideDirections.map((direction) => {
@@ -5655,18 +5655,18 @@ export class ThreeIsoGame {
     const nextX =
       axis === 'x'
         ? clamp(
-            this.player.x + amount,
-            MAP_EDGE_PADDING + PLAYER_COLLISION_RADIUS,
-            this.map.width - MAP_EDGE_PADDING - PLAYER_COLLISION_RADIUS
-          )
+          this.player.x + amount,
+          MAP_EDGE_PADDING + PLAYER_COLLISION_RADIUS,
+          this.map.width - MAP_EDGE_PADDING - PLAYER_COLLISION_RADIUS
+        )
         : this.player.x;
     const nextY =
       axis === 'y'
         ? clamp(
-            this.player.y + amount,
-            MAP_EDGE_PADDING + PLAYER_COLLISION_RADIUS,
-            this.map.height - MAP_EDGE_PADDING - PLAYER_COLLISION_RADIUS
-          )
+          this.player.y + amount,
+          MAP_EDGE_PADDING + PLAYER_COLLISION_RADIUS,
+          this.map.height - MAP_EDGE_PADDING - PLAYER_COLLISION_RADIUS
+        )
         : this.player.y;
 
     const supportHeight = this.getSupportHeight(nextX, nextY);
@@ -5680,8 +5680,8 @@ export class ThreeIsoGame {
 
     const collisionFootZ =
       this.player.grounded &&
-      supportHeight > this.player.z &&
-      supportHeight - this.player.z <= this.getStepHeight()
+        supportHeight > this.player.z &&
+        supportHeight - this.player.z <= this.getStepHeight()
         ? supportHeight
         : this.player.z;
 
@@ -5767,16 +5767,16 @@ export class ThreeIsoGame {
 
     const accelX =
       this.player.grounded &&
-      desiredScreenX !== 0 &&
-      Math.sign(desiredScreenX) !== Math.sign(this.screenVelocity.x)
+        desiredScreenX !== 0 &&
+        Math.sign(desiredScreenX) !== Math.sign(this.screenVelocity.x)
         ? groundedTurnAccel
         : this.player.grounded
           ? groundedRunAccel
           : AIR_ACCEL;
     const accelY =
       this.player.grounded &&
-      desiredScreenY !== 0 &&
-      Math.sign(desiredScreenY) !== Math.sign(this.screenVelocity.y)
+        desiredScreenY !== 0 &&
+        Math.sign(desiredScreenY) !== Math.sign(this.screenVelocity.y)
         ? groundedTurnAccel
         : this.player.grounded
           ? groundedRunAccel
