@@ -8,9 +8,11 @@ Desktop isometric action prototype built with Electron, Vite, TypeScript, Three.
 - `Space`: jump
 - left click: attack toward the clicked screen direction
 - tap `Shift`: attack in the current facing direction
-- `Tab` / `Shift+Tab`: rotate the orthographic view in 90-degree steps
+- `Tab` / `Shift+Tab`: rotate the orthographic view in animated 90-degree steps
 - `` ` ``: toggle debug free camera
 - left mouse drag: orbit the free camera while debug free camera is enabled
+- `1`: toggle the controls/help HUD panel (hidden by default)
+- `2`: toggle the lighting/debug sliders panel (hidden by default)
 
 ## Current Runtime
 
@@ -26,7 +28,7 @@ Desktop isometric action prototype built with Electron, Vite, TypeScript, Three.
 - Flower props use `Flowers/Flowers_With_Outline_Spritesheet.png` and are treated as billboard actors.
 - NPCs, flowers, and triggers can show proximity labels. NPCs and flowers flash on touch or attack; attacks currently use a debug hurtbox, simple knockback, and per-target single-hit tracking.
 - NPC, flower, trigger, and other non-player actor processing is gated by an alive radius around the player.
-- The renderer includes a HUD, compass, FPS counter, and debug controls for lighting, shadows, terrain readability, actor-occlusion tuning, actor labels, trigger hitboxes, and hurtbox visibility.
+- The renderer includes a compass, FPS counter, multiplayer panel, and two debug overlays (controls/help and lighting/debug sliders) that are hidden by default and toggled via `1` and `2`.
 
 ## Multiplayer
 

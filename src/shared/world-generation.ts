@@ -425,8 +425,8 @@ function createHubWorldMap(overworldSeed: number, overworldTeleportTile: Vec2): 
       sturdyNpcCount: 0,
       fixedSturdyNpcs: [
         {
-          x: 13.5,
-          y: 16.5,
+          x: 6.5,
+          y: 9.5,
           displayName: 'Worldsmith'
         }
       ],

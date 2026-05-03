@@ -1,3 +1,9 @@
+@font-face {
+  font-family: "OldEnglishGothicPixel";
+  src: url("./fonts/OldEnglishGothicPixelRegular-gx1jp.otf") format("opentype");
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
   --panel-bg: rgba(10, 14, 18, 0.8);
@@ -65,7 +71,8 @@ canvas {
   border-radius: 2px;
   background: rgba(0, 0, 0, 0.31);
   color: #ffffff;
-  font-weight: 700;
+  font-family: "OldEnglishGothicPixel", "Trebuchet MS", "Segoe UI", sans-serif;
+  font-weight: 400;
   line-height: 1.15;
   text-align: center;
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.7);
@@ -76,6 +83,10 @@ canvas {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   will-change: transform;
+}
+
+.hud-hidden {
+  display: none !important;
 }
 
 .hud {

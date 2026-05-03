@@ -509,16 +509,16 @@ const CAMERA_FAR = 300;
 const DEFAULT_CAMERA_DISTANCE = 25;
 const DEFAULT_CAMERA_HEIGHT = 25;
 const DEFAULT_BLOCK_HEIGHT_SCALE = 0.382;
-const DEFAULT_AMBIENT_INTENSITY = 1.35;
-const DEFAULT_SUN_INTENSITY = 1.15;
-const DEFAULT_SUN_AZIMUTH = Math.PI / 4;
-const DEFAULT_SUN_ELEVATION = 0.9;
-const DEFAULT_HEIGHT_TINT_STRENGTH = 0.35;
-const DEFAULT_SHADOW_QUALITY = 1024;
+const DEFAULT_AMBIENT_INTENSITY = 1.2;
+const DEFAULT_SUN_INTENSITY = 2.5;
+const DEFAULT_SUN_AZIMUTH = (230 * Math.PI) / 180;
+const DEFAULT_SUN_ELEVATION = (30 * Math.PI) / 180;
+const DEFAULT_HEIGHT_TINT_STRENGTH = 0.8;
+const DEFAULT_SHADOW_QUALITY = 2048;
 const FREE_CAMERA_MIN_PITCH = 0.38;
 const FREE_CAMERA_MAX_PITCH = 1.2;
 const AIRBORNE_FRAME_INDEX = 0;
-const SHADOW_CAMERA_RADIUS = 14;
+const SHADOW_CAMERA_RADIUS = 18;
 const HUD_UPDATE_INTERVAL = 1;
 const MAP_GENERATION_SEED = 0x51f15e;
 const DEFAULT_MOBILE_NPC_COUNT = 8;
@@ -693,9 +693,9 @@ const FLOWER_DEPTH_PROXY_WIDTH = FLOWER_WORLD_WIDTH * FLOWER_DEPTH_PROXY_WIDTH_F
 const FLOWER_DEPTH_PROXY_HEIGHT = FLOWER_BODY_HEIGHT * FLOWER_DEPTH_PROXY_HEIGHT_FACTOR;
 const ATTACK_HURTBOX_ELEVATION = 0.04;
 const INTERACTION_HURTBOX_ELEVATION = 0.06;
-const DEFAULT_TERRAIN_TOP_EDGE_BAND_WIDTH = 0.12;
+const DEFAULT_TERRAIN_TOP_EDGE_BAND_WIDTH = 0.2;
 const TERRAIN_TOP_EDGE_BAND_ELEVATION = 0.01;
-const DEFAULT_TERRAIN_TOP_EDGE_BAND_BRIGHTNESS = 0.62;
+const DEFAULT_TERRAIN_TOP_EDGE_BAND_BRIGHTNESS = 0.6;
 const HIDDEN_TERRAIN_INSTANCE_Y = -10000;
 const HIDDEN_TERRAIN_INSTANCE_SCALE = 0.0001;
 const DEFAULT_OCCLUSION_TUNING: OcclusionTuning = {
@@ -1475,8 +1475,8 @@ function createHubWorldMap(
       sturdyNpcCount: 0,
       fixedSturdyNpcs: [
         {
-          x: 13.5,
-          y: 16.5,
+          x: 6.5,
+          y: 9.5,
           displayName: 'Worldsmith',
           onPlainInteraction: 'regenerateOverworld'
         }
@@ -1818,6 +1818,7 @@ export class ThreeIsoGame {
   private cameraHeight = DEFAULT_CAMERA_HEIGHT;
   private blockHeightScale = DEFAULT_BLOCK_HEIGHT_SCALE;
   private cameraYaw = Math.PI / 4;
+  private cameraYawTarget = Math.PI / 4;
   private cameraPitch = 0.62;
   private walkTime = 0;
   private currentDirection = 4;
@@ -2500,6 +2501,7 @@ export class ThreeIsoGame {
     this.dragState.lastY = event.clientY;
 
     this.cameraYaw -= dx * 0.01;
+    this.cameraYawTarget = this.cameraYaw;
     this.cameraPitch = clamp(
       this.cameraPitch + dy * 0.006,
       FREE_CAMERA_MIN_PITCH,
@@ -3965,29 +3967,20 @@ export class ThreeIsoGame {
   private getTopBaseColor(materialKey: MaterialKey): Color {
     switch (materialKey) {
       case 'grass':
-        return new Color('#92c65e');
+        return new Color('#8fd25a');
       case 'moss':
-        return new Color('#64884c');
+        return new Color('#3da888');
       case 'sand':
-        return new Color('#cfb070');
+        return new Color('#eccd83');
       case 'portal':
         return new Color('#58d7ff');
       case 'stone':
-        return new Color('#b3b6c1');
+        return new Color('#b8bdcc');
     }
   }
 
-  private getHeightTintColor(materialKey: MaterialKey): Color {
-    switch (materialKey) {
-      case 'sand':
-        return new Color('#fff0c8');
-      case 'stone':
-        return new Color('#f3f7ff');
-      case 'portal':
-        return new Color('#e1fbff');
-      default:
-        return new Color('#f2ffd8');
-    }
+  private getHeightTintColor(_materialKey: MaterialKey): Color {
+    return new Color('#ffe8c4');
   }
 
   private applyTerrainScale(): void {
@@ -5721,6 +5714,7 @@ export class ThreeIsoGame {
 
       if (!this.freeCameraEnabled) {
         this.cameraYaw = Math.PI / 4 + (Math.PI / 2) * this.viewRotation;
+        this.cameraYawTarget = this.cameraYaw;
         this.cameraPitch = 0.62;
         this.dragState = null;
         this.updateCamera(dt, true);
@@ -5729,9 +5723,8 @@ export class ThreeIsoGame {
 
     if (rotateDelta !== 0) {
       this.viewRotation = (this.viewRotation + (rotateDelta % 4) + 4) % 4;
-      this.cameraYaw = Math.PI / 4 + (Math.PI / 2) * this.viewRotation;
+      this.cameraYawTarget += (Math.PI / 2) * rotateDelta;
       this.updateCompass();
-      this.updateCamera(dt, true);
     }
 
     const move = this.input.getScreenMoveVector();
@@ -6859,9 +6852,12 @@ export class ThreeIsoGame {
 
     if (snap) {
       this.cameraFocus.copy(this.cameraDesiredFocus);
+      this.cameraYaw = this.cameraYawTarget;
     } else {
       const smoothing = 1 - Math.exp(-dt * 8);
       this.cameraFocus.lerp(this.cameraDesiredFocus, smoothing);
+      const yawSmoothing = 1 - Math.exp(-dt * 9);
+      this.cameraYaw += (this.cameraYawTarget - this.cameraYaw) * yawSmoothing;
     }
 
     const distance = this.cameraDistance;

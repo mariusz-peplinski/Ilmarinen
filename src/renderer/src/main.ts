@@ -12,7 +12,7 @@ if (!root) {
 }
 
 const hud = document.createElement('div');
-hud.className = 'hud';
+hud.className = 'hud hud-hidden';
 hud.innerHTML = `
   <h1>Iso Prototype</h1>
   <p>
@@ -67,7 +67,7 @@ networkPanel.innerHTML = `
 root.appendChild(networkPanel);
 
 const lightingPanel = document.createElement('div');
-lightingPanel.className = 'lighting-panel';
+lightingPanel.className = 'lighting-panel hud-hidden';
 lightingPanel.innerHTML = `
   <h2>Lighting Debug</h2>
   <label class="debug-control">
@@ -290,6 +290,23 @@ const updateFpsCounter = (now: number): void => {
 };
 
 window.requestAnimationFrame(updateFpsCounter);
+
+window.addEventListener('keydown', (event) => {
+  if (event.repeat || event.altKey || event.ctrlKey || event.metaKey) {
+    return;
+  }
+
+  const target = event.target as HTMLElement | null;
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+    return;
+  }
+
+  if (event.code === 'Digit1') {
+    hud.classList.toggle('hud-hidden');
+  } else if (event.code === 'Digit2') {
+    lightingPanel.classList.toggle('hud-hidden');
+  }
+});
 
 const ambientSlider = lightingPanel.querySelector<HTMLInputElement>('#ambient-slider');
 const sunSlider = lightingPanel.querySelector<HTMLInputElement>('#sun-slider');

@@ -48,8 +48,8 @@ This repo is an Electron + Vite + TypeScript desktop game prototype. The active 
 - NPCs, flowers, and triggers can flash on touch or on attack. Sturdy NPCs do not use normal knockback.
 - Collision is still gameplay/logical collision, not full 3D physics.
 - Map teleporting uses a short player fade transition.
-- A temporary free camera is enabled: `` ` `` toggles it, left mouse drag rotates/orbits the camera, and `Tab` / `Shift+Tab` still snap back to quarter-turn views.
-- The renderer HUD includes a compass, FPS counter, lighting/shadow controls, terrain readability controls, actor-occlusion tuning controls, actor label controls, a trigger-hitbox toggle, and a hurtbox visibility toggle.
+- A temporary free camera is enabled: `` ` `` toggles it, left mouse drag rotates/orbits the camera, and `Tab` / `Shift+Tab` animate the camera through quarter-turn views.
+- The renderer HUD includes a compass, FPS counter, lighting/shadow controls, terrain readability controls, actor-occlusion tuning controls, actor label controls, a trigger-hitbox toggle, and a hurtbox visibility toggle. The controls/help panel and the lighting/debug sliders panel are hidden by default and toggled with `1` and `2`; the multiplayer panel is always visible.
 - Current caveat: actor ordering and actor-vs-terrain occlusion are still being tuned. Be careful when changing render order, sprite depth settings, proxy placement, or the player/front-terrain overlay path.
 
 ## Multiplayer Notes
