@@ -1,10 +1,19 @@
 import './editor.css';
 import charactersUrl from '../../../characters.png?url';
 import flowersUrl from '../../../Flowers/Flowers_With_Outline_Spritesheet.png?url';
+import type { MapId, NetworkActorKind, NetworkActorState } from '../../shared/network-protocol';
+import {
+  MAP_GENERATION_SEED,
+  OVERWORLD_TELEPORT_TILE,
+  createNetworkWorldActors,
+  createNetworkWorldMaps,
+  getRandomOverworldTeleportTile,
+  type GeneratedMap
+} from '../../shared/world-generation';
 
 type MaterialKey = 'grass' | 'stone' | 'sand' | 'moss' | 'portal';
 type EditorTool = 'tile' | 'height' | 'teleport' | 'object' | 'erase';
-type PlacedObjectType = 'npc-mobile' | 'npc-stationary' | 'flower' | 'sprite' | 'item';
+type PlacedObjectType = NetworkActorKind;
 
 interface EditorCell {
   height: number;
@@ -18,19 +27,20 @@ interface EditorObject {
   y: number;
   variant: number;
   direction: number;
+  displayName: string | null;
 }
 
 interface EditorTeleport {
   x: number;
   y: number;
-  targetMapId: string;
+  targetMapId: MapId;
   targetX: number;
   targetY: number;
 }
 
 interface EditorMapDocument {
-  version: 1;
-  id: string;
+  version: 2;
+  id: MapId;
   width: number;
   height: number;
   cells: EditorCell[];
@@ -72,11 +82,12 @@ const materialLabels: Record<MaterialKey, string> = {
 };
 
 const objectLabels: Record<PlacedObjectType, string> = {
-  'npc-mobile': 'NPC Walk',
-  'npc-stationary': 'NPC Idle',
+  'npc-mobile': 'NPC Mobile',
+  'npc-stationary': 'NPC Stationary',
+  'npc-sturdy': 'NPC Sturdy',
   flower: 'Flower',
-  sprite: 'Sprite',
-  item: 'Item'
+  crystal: 'Crystal',
+  trigger: 'Trigger'
 };
 
 const viewNames = ['N', 'E', 'S', 'W'] as const;
@@ -84,6 +95,7 @@ const tileWidth = 52;
 const tileHeight = 26;
 const heightStep = 12;
 const storageKey = 'isogame-map-editor-document';
+const HUB_WORLD_SPAWN: Vec2 = { x: 15.5, y: 18.5 };
 const materials = Object.keys(materialColors) as MaterialKey[];
 const objectTypes = Object.keys(objectLabels) as PlacedObjectType[];
 
@@ -93,6 +105,7 @@ let selectedObjectType: PlacedObjectType = 'npc-mobile';
 let selectedHeight = 2;
 let selectedVariant = 0;
 let selectedDirection = 4;
+let selectedDisplayName = '';
 let viewRotation = 0;
 let zoom = 1;
 let pan: Vec2 = { x: 0, y: 0 };
@@ -110,8 +123,10 @@ const loadImage = async (src: string): Promise<HTMLImageElement> =>
     image.src = src;
   });
 
-const createMapDocument = (id: string, width: number, height: number): EditorMapDocument => ({
-  version: 1,
+const isMapId = (value: string): value is MapId => value === 'overworld' || value === 'hubWorld';
+
+const createMapDocument = (id: MapId, width: number, height: number): EditorMapDocument => ({
+  version: 2,
   id,
   width,
   height,
@@ -123,7 +138,90 @@ const createMapDocument = (id: string, width: number, height: number): EditorMap
   objects: []
 });
 
-let documentModel = createMapDocument('new-map', 30, 30);
+const getDefaultMaterials = (mapId: MapId, height: number): MaterialKey[] => {
+  const topMaterial: MaterialKey = mapId === 'hubWorld' ? 'moss' : 'grass';
+  if (height <= 1) {
+    return [topMaterial];
+  }
+  return [...Array.from({ length: height - 1 }, () => 'stone' as MaterialKey), topMaterial];
+};
+
+const getCellSafe = (x: number, y: number): EditorCell | null => {
+  if (x < 0 || y < 0 || x >= documentModel.width || y >= documentModel.height) {
+    return null;
+  }
+  return documentModel.cells[y * documentModel.width + x] ?? null;
+};
+
+const getRuntimeTeleportTarget = (mapId: MapId): Pick<EditorTeleport, 'targetMapId' | 'targetX' | 'targetY'> => {
+  if (mapId === 'overworld') {
+    return {
+      targetMapId: 'hubWorld',
+      targetX: HUB_WORLD_SPAWN.x,
+      targetY: HUB_WORLD_SPAWN.y
+    };
+  }
+
+  return {
+    targetMapId: 'overworld',
+    targetX: OVERWORLD_TELEPORT_TILE.x + 0.5,
+    targetY: OVERWORLD_TELEPORT_TILE.y + 0.5
+  };
+};
+
+const createEditorObjectFromActor = (actor: NetworkActorState): EditorObject => ({
+  id: actor.id,
+  type: actor.kind,
+  x: actor.x,
+  y: actor.y,
+  variant: actor.variant ?? 0,
+  direction: actor.facing ?? 4,
+  displayName: actor.displayName
+});
+
+const createDocumentFromGeneratedMap = (
+  map: GeneratedMap,
+  actors: readonly NetworkActorState[]
+): EditorMapDocument => {
+  const cells = map.heights.map((height) => ({
+    height,
+    materials: getDefaultMaterials(map.id, height)
+  }));
+
+  const teleports = map.teleports.map((teleportTile) => {
+    const target = getRuntimeTeleportTarget(map.id);
+    const cell = cells[teleportTile.y * map.width + teleportTile.x];
+    if (cell) {
+      cell.materials[cell.materials.length - 1] = 'portal';
+    }
+    return {
+      x: teleportTile.x,
+      y: teleportTile.y,
+      ...target
+    };
+  });
+
+  return {
+    version: 2,
+    id: map.id,
+    width: map.width,
+    height: map.height,
+    cells,
+    teleports,
+    objects: actors.filter((actor) => actor.mapId === map.id).map(createEditorObjectFromActor)
+  };
+};
+
+const createRuntimeDocument = (mapId: MapId, seed = MAP_GENERATION_SEED): EditorMapDocument => {
+  const teleportTile = seed === MAP_GENERATION_SEED
+    ? OVERWORLD_TELEPORT_TILE
+    : getRandomOverworldTeleportTile(seed);
+  const maps = createNetworkWorldMaps(seed, teleportTile);
+  const actors = createNetworkWorldActors(seed, teleportTile, new Set());
+  return createDocumentFromGeneratedMap(maps[mapId], actors);
+};
+
+let documentModel = createRuntimeDocument('hubWorld');
 
 const getIndex = (x: number, y: number): number => y * documentModel.width + x;
 
@@ -138,8 +236,8 @@ const normalizeCell = (cell: EditorCell): void => {
 };
 
 const cloneDocument = (doc: EditorMapDocument): EditorMapDocument => ({
-  version: 1,
-  id: doc.id || 'new-map',
+  version: 2,
+  id: doc.id,
   width: Math.max(1, Math.round(doc.width)),
   height: Math.max(1, Math.round(doc.height)),
   cells: doc.cells.map((cell) => ({
@@ -151,6 +249,10 @@ const cloneDocument = (doc: EditorMapDocument): EditorMapDocument => ({
 });
 
 const repairDocument = (doc: EditorMapDocument): EditorMapDocument => {
+  if (doc.version !== 2 || !isMapId(doc.id)) {
+    throw new Error('Editor document must be version 2 and use map id overworld or hubWorld.');
+  }
+
   const repaired = cloneDocument(doc);
   const requiredCells = repaired.width * repaired.height;
 
@@ -168,10 +270,16 @@ const repairDocument = (doc: EditorMapDocument): EditorMapDocument => {
       teleport.x >= 0 &&
       teleport.y >= 0 &&
       teleport.x < repaired.width &&
-      teleport.y < repaired.height
+      teleport.y < repaired.height &&
+      isMapId(teleport.targetMapId)
   );
   repaired.objects = repaired.objects.filter(
-    (object) => object.x >= 0 && object.y >= 0 && object.x < repaired.width && object.y < repaired.height
+    (object) =>
+      object.x >= 0 &&
+      object.y >= 0 &&
+      object.x < repaired.width &&
+      object.y < repaired.height &&
+      object.type in objectLabels
   );
 
   return repaired;
@@ -224,6 +332,10 @@ root.innerHTML = `
           </label>
         </div>
         <button class="button warn" id="new-map-button">New / Resize</button>
+        <div class="preset-row">
+          <button class="button" id="runtime-overworld-button">Startup Overworld</button>
+          <button class="button" id="runtime-hub-button">Hub World</button>
+        </div>
       </section>
 
       <section class="panel-section">
@@ -253,6 +365,10 @@ root.innerHTML = `
             <input id="direction-input" type="number" min="0" max="7" />
           </label>
         </div>
+        <label class="field">
+          <span>Name / Label</span>
+          <input id="object-label-input" type="text" placeholder="Optional actor label" />
+        </label>
       </section>
 
       <section class="panel-section">
@@ -314,6 +430,7 @@ const mapHeightInput = document.querySelector<HTMLInputElement>('#map-height-inp
 const heightInput = document.querySelector<HTMLInputElement>('#height-input');
 const variantInput = document.querySelector<HTMLInputElement>('#variant-input');
 const directionInput = document.querySelector<HTMLInputElement>('#direction-input');
+const objectLabelInput = document.querySelector<HTMLInputElement>('#object-label-input');
 const targetMapInput = document.querySelector<HTMLInputElement>('#target-map-input');
 const targetXInput = document.querySelector<HTMLInputElement>('#target-x-input');
 const targetYInput = document.querySelector<HTMLInputElement>('#target-y-input');
@@ -335,6 +452,7 @@ if (
   !heightInput ||
   !variantInput ||
   !directionInput ||
+  !objectLabelInput ||
   !targetMapInput ||
   !targetXInput ||
   !targetYInput ||
@@ -501,24 +619,84 @@ const drawFlowerObject = (object: EditorObject, screen: Vec2): void => {
   );
 };
 
-const drawPlacedObject = (object: EditorObject): void => {
-  const cell = getCell(object.x, object.y);
-  const screen = mapToScreen(object.x + 0.5, object.y + 0.5, cell.height);
+const drawCrystalObject = (screen: Vec2): void => {
+  context.beginPath();
+  context.moveTo(screen.x, screen.y - 28 * zoom);
+  context.lineTo(screen.x + 9 * zoom, screen.y - 15 * zoom);
+  context.lineTo(screen.x, screen.y - 2 * zoom);
+  context.lineTo(screen.x - 9 * zoom, screen.y - 15 * zoom);
+  context.closePath();
+  context.fillStyle = '#77e6ff';
+  context.fill();
+  context.strokeStyle = '#163c52';
+  context.lineWidth = Math.max(1, zoom);
+  context.stroke();
+};
 
-  if (object.type === 'npc-mobile' || object.type === 'npc-stationary' || object.type === 'sprite') {
+const drawTriggerObject = (screen: Vec2): void => {
+  context.save();
+  context.strokeStyle = '#ffd166';
+  context.fillStyle = 'rgba(255, 209, 102, 0.18)';
+  context.lineWidth = Math.max(2, 2 * zoom);
+  context.beginPath();
+  context.ellipse(screen.x, screen.y - 8 * zoom, 17 * zoom, 9 * zoom, 0, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+  context.restore();
+};
+
+const drawObjectLabel = (object: EditorObject, screen: Vec2): void => {
+  if (!object.displayName) {
+    return;
+  }
+
+  context.font = `${Math.max(10, 11 * zoom)}px sans-serif`;
+  context.textAlign = 'center';
+  context.textBaseline = 'bottom';
+  context.lineWidth = Math.max(2, 3 * zoom);
+  context.strokeStyle = 'rgba(4, 9, 8, 0.9)';
+  context.fillStyle = '#f4f8f2';
+  context.strokeText(object.displayName, screen.x, screen.y - 36 * zoom);
+  context.fillText(object.displayName, screen.x, screen.y - 36 * zoom);
+};
+
+const drawPlacedObject = (object: EditorObject): void => {
+  const tileX = Math.floor(object.x);
+  const tileY = Math.floor(object.y);
+  const cell = getCellSafe(tileX, tileY);
+  if (!cell) {
+    return;
+  }
+
+  const screen = mapToScreen(object.x, object.y, cell.height);
+
+  if (
+    object.type === 'npc-mobile' ||
+    object.type === 'npc-stationary' ||
+    object.type === 'npc-sturdy'
+  ) {
     drawCharacterObject(object, screen);
   } else if (object.type === 'flower') {
     drawFlowerObject(object, screen);
+  } else if (object.type === 'crystal') {
+    drawCrystalObject(screen);
+  } else if (object.type === 'trigger') {
+    drawTriggerObject(screen);
   } else {
-    context.beginPath();
-    context.arc(screen.x, screen.y - 11 * zoom, 7 * zoom, 0, Math.PI * 2);
-    context.fillStyle = '#f2d36b';
-    context.fill();
-    context.strokeStyle = '#4f421a';
-    context.stroke();
+    return;
   }
 
-  context.fillStyle = object.type === 'npc-stationary' ? '#ff7979' : '#74a9ff';
+  drawObjectLabel(object, screen);
+
+  context.fillStyle = object.type === 'npc-stationary'
+    ? '#ff7979'
+    : object.type === 'npc-sturdy'
+      ? '#c7a6ff'
+      : object.type === 'trigger'
+        ? '#ffd166'
+        : object.type === 'crystal'
+          ? '#77e6ff'
+          : '#74a9ff';
   context.fillRect(screen.x - 3 * zoom, screen.y - 3 * zoom, 6 * zoom, 6 * zoom);
 };
 
@@ -599,7 +777,8 @@ const refreshObjectList = (): void => {
   for (const object of documentModel.objects) {
     const item = document.createElement('li');
     const label = document.createElement('span');
-    label.textContent = `${objectLabels[object.type]} ${object.x},${object.y}`;
+    const name = object.displayName ? ` - ${object.displayName}` : '';
+    label.textContent = `${objectLabels[object.type]} ${object.x.toFixed(1)},${object.y.toFixed(1)}${name}`;
     const removeButton = document.createElement('button');
     removeButton.textContent = 'x';
     removeButton.title = 'Remove object';
@@ -621,6 +800,7 @@ const syncControls = (): void => {
   heightInput.value = String(selectedHeight);
   variantInput.value = String(selectedVariant);
   directionInput.value = String(selectedDirection);
+  objectLabelInput.value = selectedDisplayName;
   updateJsonBuffer();
   refreshObjectList();
   render();
@@ -649,13 +829,14 @@ const applyTileEdit = (tile: Vec2): void => {
     const existing = documentModel.teleports.find(
       (teleport) => teleport.x === tile.x && teleport.y === tile.y
     );
+    const targetMapIdInput = targetMapInput.value.trim();
     const nextTeleport = {
       x: tile.x,
       y: tile.y,
-      targetMapId: targetMapInput.value.trim() || 'overworld',
+      targetMapId: isMapId(targetMapIdInput) ? targetMapIdInput : 'overworld',
       targetX: Number(targetXInput.value) || 0,
       targetY: Number(targetYInput.value) || 0
-    };
+    } satisfies EditorTeleport;
 
     if (existing) {
       Object.assign(existing, nextTeleport);
@@ -663,20 +844,29 @@ const applyTileEdit = (tile: Vec2): void => {
       documentModel.teleports.push(nextTeleport);
     }
   } else if (selectedTool === 'object') {
+    const objectX = tile.x + 0.5;
+    const objectY = tile.y + 0.5;
+    const objectLabel = selectedDisplayName.trim() || null;
     documentModel.objects = documentModel.objects.filter(
-      (object) => !(object.x === tile.x && object.y === tile.y && object.type === selectedObjectType)
+      (object) =>
+        !(
+          Math.floor(object.x) === tile.x &&
+          Math.floor(object.y) === tile.y &&
+          object.type === selectedObjectType
+        )
     );
     documentModel.objects.push({
       id: `${selectedObjectType}-${tile.x}-${tile.y}-${Date.now()}`,
       type: selectedObjectType,
-      x: tile.x,
-      y: tile.y,
+      x: objectX,
+      y: objectY,
       variant: selectedVariant,
-      direction: selectedDirection
+      direction: selectedDirection,
+      displayName: objectLabel
     });
   } else if (selectedTool === 'erase') {
     documentModel.objects = documentModel.objects.filter(
-      (object) => object.x !== tile.x || object.y !== tile.y
+      (object) => Math.floor(object.x) !== tile.x || Math.floor(object.y) !== tile.y
     );
     documentModel.teleports = documentModel.teleports.filter(
       (teleport) => teleport.x !== tile.x || teleport.y !== tile.y
@@ -841,8 +1031,17 @@ directionInput.addEventListener('input', () => {
   selectedDirection = Math.max(0, Math.min(7, Math.round(Number(directionInput.value) || 0)));
 });
 
+objectLabelInput.addEventListener('input', () => {
+  selectedDisplayName = objectLabelInput.value;
+});
+
 mapIdInput.addEventListener('change', () => {
-  documentModel.id = mapIdInput.value.trim() || 'new-map';
+  const nextMapId = mapIdInput.value.trim();
+  if (isMapId(nextMapId)) {
+    documentModel.id = nextMapId;
+  } else {
+    mapIdInput.value = documentModel.id;
+  }
   saveLocal();
   syncControls();
 });
@@ -850,7 +1049,19 @@ mapIdInput.addEventListener('change', () => {
 document.querySelector<HTMLButtonElement>('#new-map-button')?.addEventListener('click', () => {
   const width = Math.max(1, Math.min(256, Math.round(Number(mapWidthInput.value) || 30)));
   const height = Math.max(1, Math.min(256, Math.round(Number(mapHeightInput.value) || 30)));
-  setDocument(createMapDocument(mapIdInput.value.trim() || 'new-map', width, height));
+  const mapIdValue = mapIdInput.value.trim();
+  const nextMapId = isMapId(mapIdValue) ? mapIdValue : documentModel.id;
+  setDocument(createMapDocument(nextMapId, width, height));
+  saveLocal();
+});
+
+document.querySelector<HTMLButtonElement>('#runtime-overworld-button')?.addEventListener('click', () => {
+  setDocument(createRuntimeDocument('overworld'));
+  saveLocal();
+});
+
+document.querySelector<HTMLButtonElement>('#runtime-hub-button')?.addEventListener('click', () => {
+  setDocument(createRuntimeDocument('hubWorld'));
   saveLocal();
 });
 

@@ -111,6 +111,13 @@ textarea {
   gap: 8px;
 }
 
+.preset-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .field input,
 .field select,
 .field textarea {

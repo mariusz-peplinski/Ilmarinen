@@ -43,7 +43,9 @@ Desktop isometric action prototype built with Electron, Vite, TypeScript, Three.
 ## Map Editor
 
 - `npm run editor` or `npm run dev:editor`: launch the Electron map editor instead of the game.
-- The editor supports tile/material painting, height edits, teleport/object placement, local save, JSON import/export, and file import.
+- The editor supports tile/material painting, height edits, runtime map presets, teleport placement, current actor-kind placement, local save, JSON import/export, and file import.
+- Editor JSON is a standalone version `2` authoring format with `cells`, `teleports`, and `objects`; it is not yet consumed by the live runtime loader.
+- Runtime presets are generated from shared world state for dimensions, heights, teleports, and actor manifests. The editor uses simplified material previews for those generated maps.
 - The editor is a canvas-based tool path under `src/renderer/editor.html`, `src/renderer/src/editor.ts`, and `src/renderer/src/editor.css`.
 
 ## Scripts

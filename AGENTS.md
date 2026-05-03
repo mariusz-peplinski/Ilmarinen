@@ -71,8 +71,9 @@ This repo is an Electron + Vite + TypeScript desktop game prototype. The active 
 
 - `npm run editor` and `npm run dev:editor` launch the Electron map editor via `ISOGAME_TOOL=editor`.
 - The editor is a separate canvas renderer, not the live Three.js runtime.
-- The editor currently supports tile/material painting, height edits, teleport/object placement, local storage save, JSON import/export, and file import.
-- Editor documents are JSON with `cells`, `teleports`, and `objects`; they are not yet wired into the runtime loader.
+- The editor currently supports tile/material painting, height edits, runtime map presets, teleport placement, current actor-kind placement, local storage save, JSON import/export, and file import.
+- Editor documents are standalone version `2` JSON with `cells`, `teleports`, and `objects`; they are not yet wired into the runtime loader.
+- Runtime preset buttons are generated from shared world state for dimensions, heights, teleports, and actor manifests. Their terrain material columns are simplified editor previews, not exact Three.js generated material columns.
 
 ## Asset Notes
 
