@@ -9,7 +9,7 @@
     "dev:editor": "ISOGAME_TOOL=editor electron-vite dev",
     "server": "tsx src/server/index.ts",
     "build": "electron-vite build",
-    "dist": "npm run build && electron-builder",
+    "dist": "node scripts/setup-wincodeSign.cjs && npm run build && electron-builder",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
